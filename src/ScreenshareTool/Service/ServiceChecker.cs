@@ -1,17 +1,12 @@
+﻿using System.IO;
 using System.Diagnostics;
 using System.Diagnostics.Eventing.Reader;
 using System.Globalization;
-using System.IO;
 using System.ServiceProcess;
 using System.Text;
 using Microsoft.Win32;
 using Serilog;
 using System.Text.Json.Serialization;
-
-
-
-
-
 
 public static class ServiceChecker
 {
@@ -57,7 +52,10 @@ public static class ServiceChecker
         }
     }
 
-    private static async Task<ServiceCheckResult> RunAsync(CancellationToken ct)
+    public static Task<ServiceCheckResult> RunAsync(CancellationToken ct = default)
+        => RunCoreAsync(ct);
+
+    private static async Task<ServiceCheckResult> RunCoreAsync(CancellationToken ct)
     {
         var result = new ServiceCheckResult
         {
@@ -107,8 +105,6 @@ public static class ServiceChecker
         return n;
     }
 
-    
-
     private static ServiceBootInfo CollectBoot(DateTime bootLocal)
     {
         var info = new ServiceBootInfo
@@ -129,7 +125,7 @@ public static class ServiceChecker
             {
                 info.TickMismatch = true;
                 info.TickBootEstimate = tickBoot.ToString("yyyy-MM-dd HH:mm:ss");
-                info.TickNote = "Differs from registry — sleep or clock change";
+                info.TickNote = "Differs from registry \u2014 sleep or clock change";
             }
         }
         catch (Exception ex)
@@ -143,8 +139,6 @@ public static class ServiceChecker
 
     private static string FormatUptime(TimeSpan up)
         => $"{(int)up.TotalHours}h {up.Minutes}m {up.Seconds}s";
-
-    
 
     private static List<ServiceDriveInfo> CollectDrives(CancellationToken ct)
     {
@@ -209,13 +203,13 @@ public static class ServiceChecker
 
     private static string GetMediaType(string root)
     {
-        foreach (uint access in new uint[] { FILE_READ_ATTRIBUTES, 0 })
+        foreach (uint access in new uint[] { NativeMethods.GENERIC_READ, 0 })
         {
             IntPtr h = NativeMethods.CreateFileW(
                 @"\\.\" + root,
                 access,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+                NativeMethods.FILE_SHARE_READ | NativeMethods.FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                IntPtr.Zero, NativeMethods.OPEN_EXISTING, 0, IntPtr.Zero);
 
             if (h == NativeMethods.InvalidHandleValue)
                 continue;
@@ -247,8 +241,6 @@ public static class ServiceChecker
 
         return "Unknown";
     }
-
-    
 
     private static List<ServiceEntry> CollectServices(CancellationToken ct)
     {
@@ -309,7 +301,6 @@ public static class ServiceChecker
                         }
                         catch
                         {
-                            
                         }
                     }
                 }
@@ -394,9 +385,10 @@ public static class ServiceChecker
     {
         foreach (string name in names)
         {
+            ServiceController? sc = null;
             try
             {
-                var sc = new ServiceController(name);
+                sc = new ServiceController(name);
                 _ = sc.Status;
                 service = sc;
                 resolvedName = name;
@@ -404,10 +396,12 @@ public static class ServiceChecker
             }
             catch (InvalidOperationException)
             {
-                
+                sc?.Dispose();
             }
+            catch (OperationCanceledException) { sc?.Dispose(); throw; }
             catch (Exception ex)
             {
+                sc?.Dispose();
                 Logger.Debug(ex, "Could not open service {Name}", name);
             }
         }
@@ -417,10 +411,6 @@ public static class ServiceChecker
         return false;
     }
 
-    
-    
-    
-    
     private static void FillMissingStartTimes(List<ServiceEntry> entries, CancellationToken ct)
     {
         var missing = entries
@@ -431,11 +421,6 @@ public static class ServiceChecker
             return;
 
         ApplyScmTimes(missing, eventId: 7036, runningStatesOnly: true, ct);
-        missing = missing.Where(e => string.IsNullOrEmpty(e.StartedAt)).ToList();
-        if (missing.Count == 0)
-            return;
-
-        ApplyScmTimes(missing, eventId: 7035, runningStatesOnly: false, ct);
     }
 
     private static void ApplyScmTimes(
@@ -529,8 +514,6 @@ public static class ServiceChecker
         return !string.IsNullOrEmpty(displayName) &&
                string.Equals(value, displayName, StringComparison.OrdinalIgnoreCase);
     }
-
-    
 
     private static ServiceEventsInfo CollectEvents(DateTime bootLocal, CancellationToken ct)
     {
@@ -664,8 +647,6 @@ public static class ServiceChecker
         return list;
     }
 
-    
-
     private static RecycleBinInfo CollectRecycleBin(DateTime bootLocal, CancellationToken ct)
     {
         var info = new RecycleBinInfo();
@@ -794,10 +775,6 @@ public static class ServiceChecker
         }
     }
 
-    
-    
-    
-    
     private static string ReadRecycleBinPath(byte[] data)
     {
         if (data.Length < 24)
@@ -825,8 +802,6 @@ public static class ServiceChecker
         return sb.ToString();
     }
 
-    
-
     private static string FormatBytes(long bytes)
     {
         string[] units = { "B", "KB", "MB", "GB", "TB" };
@@ -841,11 +816,7 @@ public static class ServiceChecker
         return num + " " + units[i];
     }
 
-    private const uint FILE_SHARE_READ = 0x00000001;
-    private const uint FILE_SHARE_WRITE = 0x00000002;
     private const uint FILE_SHARE_DELETE = 0x00000004;
-    private const uint FILE_READ_ATTRIBUTES = 0x00000080;
-    private const uint OPEN_EXISTING = 3;
     private const uint IOCTL_STORAGE_QUERY_PROPERTY = 0x002D1400;
     private const uint StorageDeviceSeekPenaltyProperty = 7;
 }

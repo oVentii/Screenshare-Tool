@@ -1,191 +1,227 @@
-/* iRis background — pure 2D canvas particle constellation (B&W, no dependencies).
- * Replaces the previous three.js scene: lighter, faster, offline-friendly. */
 (function () {
     'use strict';
 
-    const canvas = document.getElementById('bg-canvas');
+    var canvas = document.getElementById('bg-canvas');
     if (!canvas) return;
-    const ctx = canvas.getContext('2d', { alpha: true });
+    var ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) return;
 
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const html = document.documentElement;
-    const perfLow = html.classList.contains('perf-low');
-    const veryLow = html.classList.contains('perf-very-low');
+    var html = document.documentElement;
+    var reducedMotion = false;
+    var perfLow = false;
+    var veryLow = false;
+    try {
+        reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        perfLow = html.classList.contains('perf-low');
+        veryLow = html.classList.contains('perf-very-low');
+    } catch (e) {}
 
-    let W = 0, H = 0, DPR = 1;
-    let particles = [];
-    let links = [];
-    const mouse = { x: -9999, y: -9999, tx: -9999, ty: -9999 };
-    let running = true;
-    let light = false;
+    if (veryLow) {
+        canvas.style.display = 'none';
+        return;
+    }
 
-    const isLight = () => html.getAttribute('data-theme') === 'light';
+    var W = 0, H = 0;
+    var particles = [];
+    var running = true;
+    var light = false;
+    var rafId = 0;
+    var lastFrame = 0;
+    var frameInterval = perfLow ? 66 : 33;
+    var resizeTimer = 0;
+    var mx = -9999, my = -9999, tmx = -9999, tmy = -9999;
 
-    // Density tuned by hardware + reduced-motion preferences.
-    const targetCount = veryLow ? 0 : reducedMotion ? 70 : perfLow ? 110 : 190;
+    var COUNT = reducedMotion ? 0 : perfLow ? 45 : 90;
+    var MAX_DIST = 130;
+    var MAX_DIST2 = MAX_DIST * MAX_DIST;
+    var LINK_CAP = perfLow ? 24 : 48;
+    var MOUSE_RAD = 170;
+    var MOUSE_RAD2 = MOUSE_RAD * MOUSE_RAD;
+
+    function isLight() {
+        return html.getAttribute('data-theme') === 'light';
+    }
+
+    function isPaused() {
+        return document.hidden || html.classList.contains('bg-paused');
+    }
 
     function resize() {
-        DPR = Math.min(window.devicePixelRatio || 1, 2);
+        var dpr = window.devicePixelRatio || 1;
+        if (dpr > 1.25) dpr = 1.25;
         W = window.innerWidth;
         H = window.innerHeight;
-        canvas.width = Math.max(1, Math.floor(W * DPR));
-        canvas.height = Math.max(1, Math.floor(H * DPR));
+        canvas.width = Math.max(1, Math.floor(W * dpr));
+        canvas.height = Math.max(1, Math.floor(H * dpr));
         canvas.style.width = W + 'px';
         canvas.style.height = H + 'px';
-        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         seed();
+        if (reducedMotion) renderStatic();
     }
 
     function seed() {
         particles = [];
-        for (let i = 0; i < targetCount; i++) {
+        for (var i = 0; i < COUNT; i++) {
             particles.push({
                 x: Math.random() * W,
                 y: Math.random() * H,
-                vx: (Math.random() - 0.5) * 0.22,
-                vy: (Math.random() - 0.5) * 0.22,
-                r: Math.random() * 1.4 + 0.5,
-                tw: Math.random() * Math.PI * 2
+                vx: (Math.random() - 0.5) * 0.3,
+                vy: (Math.random() - 0.5) * 0.3,
+                r: Math.random() * 1.3 + 0.5,
+                tw: Math.random() * 6.283
             });
         }
-        // Static link grid for perf-friendly modes.
-        links = [];
-        if (reducedMotion || veryLow) {
-            for (let i = 0; i < particles.length; i++) {
-                for (let j = i + 1; j < particles.length; j++) {
-                    const a = particles[i], b = particles[j];
-                    const dx = a.x - b.x, dy = a.y - b.y;
-                    if (dx * dx + dy * dy < 120 * 120) {
-                        links.push([i, j, Math.hypot(dx, dy)]);
-                    }
-                }
-            }
-        }
     }
 
-    function drawLinks(dt) {
-        if (reducedMotion || veryLow) {
-            for (const [i, j, dist] of links) {
-                const a = particles[i], b = particles[j];
-                const alpha = Math.max(0, 1 - dist / 120) * 0.10;
-                ctx.strokeStyle = light
-                    ? 'rgba(23,32,42,' + alpha.toFixed(3) + ')'
-                    : 'rgba(255,255,255,' + alpha.toFixed(3) + ')';
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.moveTo(a.x, a.y);
-                ctx.lineTo(b.x, b.y);
-                ctx.stroke();
-            }
+    function renderStatic() {
+        ctx.clearRect(0, 0, W, H);
+        light = isLight();
+        var dot = light ? 'rgba(23,32,42,0.35)' : 'rgba(255,255,255,0.4)';
+        ctx.fillStyle = dot;
+        ctx.beginPath();
+        for (var i = 0; i < particles.length; i++) {
+            var p = particles[i];
+            ctx.moveTo(p.x + p.r, p.y);
+            ctx.arc(p.x, p.y, p.r, 0, 6.283);
+        }
+        ctx.fill();
+    }
+
+    function frame(now) {
+        rafId = 0;
+        if (!running) return;
+        if (isPaused()) {
+            schedule();
             return;
         }
-
-        // Dynamic nearest-neighbour links, capped for performance.
-        const maxDist = 130;
-        const cap = veryLow ? 0 : perfLow ? 40 : 80;
-        let drawn = 0;
-        for (let i = 0; i < particles.length && drawn < cap; i++) {
-            const a = particles[i];
-            let best = null, bestD = maxDist * maxDist;
-            for (let j = i + 1; j < particles.length; j++) {
-                const b = particles[j];
-                const dx = a.x - b.x, dy = a.y - b.y;
-                const d2 = dx * dx + dy * dy;
-                if (d2 < bestD) { bestD = d2; best = b; }
-            }
-            if (best) {
-                const alpha = Math.max(0, 1 - Math.sqrt(bestD) / maxDist) * 0.14;
-                ctx.strokeStyle = light
-                    ? 'rgba(23,32,42,' + alpha.toFixed(3) + ')'
-                    : 'rgba(255,255,255,' + alpha.toFixed(3) + ')';
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.moveTo(a.x, a.y);
-                ctx.lineTo(best.x, best.y);
-                ctx.stroke();
-                drawn++;
-            }
+        if (now - lastFrame < frameInterval) {
+            schedule();
+            return;
         }
-    }
-
-    let last = performance.now();
-    function frame(now) {
-        if (!running) return;
-        requestAnimationFrame(frame);
-        const dt = Math.min(0.05, (now - last) / 1000);
-        last = now;
+        lastFrame = now;
+        var dt = frameInterval / 1000;
 
         ctx.clearRect(0, 0, W, H);
 
-        // Ease mouse.
-        mouse.x += (mouse.tx - mouse.x) * 0.06;
-        mouse.y += (mouse.ty - mouse.y) * 0.06;
+        mx += (tmx - mx) * 0.08;
+        my += (tmy - my) * 0.08;
 
-        const mRad = 170;
-
-        for (const p of particles) {
+        var i, p, dxm, dym, dm2, dm, force;
+        for (i = 0; i < particles.length; i++) {
+            p = particles[i];
             p.tw += dt * 1.4;
-
-            // Gentle repulsion from the cursor.
-            const dxm = p.x - mouse.x, dym = p.y - mouse.y;
-            const dm2 = dxm * dxm + dym * dym;
-            if (dm2 < mRad * mRad && dm2 > 0.01) {
-                const dm = Math.sqrt(dm2);
-                const force = ((mRad - dm) / mRad) * 26 * dt;
+            dxm = p.x - mx;
+            dym = p.y - my;
+            dm2 = dxm * dxm + dym * dym;
+            if (dm2 < MOUSE_RAD2 && dm2 > 0.01) {
+                dm = Math.sqrt(dm2);
+                force = ((MOUSE_RAD - dm) / MOUSE_RAD) * 26 * dt;
                 p.vx += (dxm / dm) * force;
                 p.vy += (dym / dm) * force;
             }
-
             p.vx *= 0.985;
             p.vy *= 0.985;
             p.x += p.vx;
             p.y += p.vy;
-
-            // Wrap around edges.
             if (p.x < -12) p.x = W + 12;
             else if (p.x > W + 12) p.x = -12;
             if (p.y < -12) p.y = H + 12;
             else if (p.y > H + 12) p.y = -12;
-
-            const pulse = 0.6 + 0.4 * Math.sin(p.tw);
-            const alpha = 0.28 + 0.5 * pulse;
-            ctx.fillStyle = light
-                ? 'rgba(23,32,42,' + alpha.toFixed(3) + ')'
-                : 'rgba(255,255,255,' + alpha.toFixed(3) + ')';
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, p.r * (0.8 + 0.3 * pulse), 0, Math.PI * 2);
-            ctx.fill();
         }
 
-        drawLinks(dt);
+        var prefix = light ? 'rgba(23,32,42,' : 'rgba(255,255,255,';
+        ctx.fillStyle = prefix + '0.55)';
+        ctx.beginPath();
+        for (i = 0; i < particles.length; i++) {
+            p = particles[i];
+            ctx.moveTo(p.x + p.r, p.y);
+            ctx.arc(p.x, p.y, p.r, 0, 6.283);
+        }
+        ctx.fill();
+
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = light ? 'rgba(23,32,42,0.10)' : 'rgba(255,255,255,0.10)';
+        ctx.beginPath();
+        var drawn = 0;
+        for (i = 0; i < particles.length && drawn < LINK_CAP; i++) {
+            var a = particles[i];
+            var best = null, bestD = MAX_DIST2;
+            for (var j = i + 1; j < particles.length; j++) {
+                var b = particles[j];
+                var dx = a.x - b.x, dy = a.y - b.y;
+                var d2 = dx * dx + dy * dy;
+                if (d2 < bestD) { bestD = d2; best = b; }
+            }
+            if (best) {
+                ctx.moveTo(a.x, a.y);
+                ctx.lineTo(best.x, best.y);
+                drawn++;
+            }
+        }
+        ctx.stroke();
+
+        schedule();
     }
 
-    function applyTheme() {
-        light = isLight();
+    function schedule() {
+        if (!rafId && running && !reducedMotion) {
+            rafId = requestAnimationFrame(frame);
+        }
     }
 
-    function onMouse(e) {
-        mouse.tx = e.clientX;
-        mouse.ty = e.clientY;
-    }
-    function onLeave() {
-        mouse.tx = -9999;
-        mouse.ty = -9999;
+    function start() {
+        if (reducedMotion || !COUNT) return;
+        running = true;
+        lastFrame = performance.now();
+        schedule();
     }
 
-    window.addEventListener('resize', resize, { passive: true });
-    window.addEventListener('mousemove', onMouse, { passive: true });
-    document.addEventListener('mouseleave', onLeave, { passive: true });
-    document.addEventListener('visibilitychange', () => {
-        if (document.hidden) { running = false; }
-        else { running = true; requestAnimationFrame(frame); }
-    });
-    new MutationObserver(() => {
-        if (light !== isLight()) applyTheme();
-    }).observe(html, { attributes: true, attributeFilter: ['data-theme'] });
+    function stop() {
+        running = false;
+        if (rafId) {
+            try { cancelAnimationFrame(rafId); } catch (e) {}
+            rafId = 0;
+        }
+    }
 
-    applyTheme();
+    window.addEventListener('resize', function () {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(resize, 150);
+    }, { passive: true });
+    window.addEventListener('mousemove', function (e) {
+        tmx = e.clientX;
+        tmy = e.clientY;
+    }, { passive: true });
+    document.addEventListener('mouseleave', function () {
+        tmx = -9999;
+        tmy = -9999;
+    }, { passive: true });
+    document.addEventListener('visibilitychange', function () {
+        if (document.hidden) stop();
+        else {
+            light = isLight();
+            running = true;
+            lastFrame = performance.now();
+            schedule();
+        }
+    }, { passive: true });
+    window.addEventListener('blur', stop, { passive: true });
+    window.addEventListener('focus', function () {
+        if (!document.hidden) {
+            running = true;
+            lastFrame = performance.now();
+            schedule();
+        }
+    }, { passive: true });
+    try {
+        new MutationObserver(function () {
+            var v = isLight();
+            if (v !== light) light = v;
+        }).observe(html, { attributes: true, attributeFilter: ['data-theme'] });
+    } catch (e) {}
+
+    light = isLight();
     resize();
-    if (!veryLow) requestAnimationFrame(frame);
+    start();
 })();

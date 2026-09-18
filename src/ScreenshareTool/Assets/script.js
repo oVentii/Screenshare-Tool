@@ -1,14 +1,6 @@
-/* ==========================================================================
-   iRis Screenshare Tool — frontend logic
-   Rewritten: modular, dependency-free, fixes leftover BAM references.
-   Talks to the .NET host through window.pywebview.api.*
-   ========================================================================== */
-(function () {
+﻿(function () {
     'use strict';
 
-    /* ---------------------------------------------------------------- *
-     *  SoundFX — tiny WebAudio synth (no audio files needed)
-     * ---------------------------------------------------------------- */
     const SoundFX = (() => {
         let ctx = null;
         let master = null;
@@ -64,16 +56,26 @@
             osc.stop(start + duration + 0.05);
         }
 
-        function noise(c, vol, duration, start = 0) {
-            const size = Math.floor(c.sampleRate * duration);
-            const buffer = c.createBuffer(1, size, c.sampleRate);
+        const noiseCache = new Map();
+        function noiseBuffer(c, duration) {
+            const key = c.sampleRate + ':' + duration;
+            let buffer = noiseCache.get(key);
+            if (buffer) return buffer;
+            const size = Math.max(1, Math.floor(c.sampleRate * duration));
+            buffer = c.createBuffer(1, size, c.sampleRate);
             const data = buffer.getChannelData(0);
             for (let i = 0; i < size; i++) {
                 data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / size, 1.8);
             }
+            if (noiseCache.size > 8) noiseCache.clear();
+            noiseCache.set(key, buffer);
+            return buffer;
+        }
+
+        function noise(c, vol, duration, start = 0) {
             const src = c.createBufferSource();
             const gain = c.createGain();
-            src.buffer = buffer;
+            src.buffer = noiseBuffer(c, duration);
             gain.gain.setValueAtTime(vol, start);
             gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
             src.connect(gain);
@@ -173,9 +175,6 @@
         };
     })();
 
-    /* ---------------------------------------------------------------- *
-     *  Shared helpers
-     * ---------------------------------------------------------------- */
     const $ = (id) => document.getElementById(id);
     const $$ = (sel, root) => (root || document).querySelectorAll(sel);
 
@@ -198,7 +197,10 @@
     };
 
     function addRipple(btn, x, y) {
+        if (!btn || document.documentElement.classList.contains('perf-very-low')) return;
+        if (typeof x !== 'number' || typeof y !== 'number') return;
         const rect = btn.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
         const size = Math.max(rect.width, rect.height) * 1.4;
         const el = document.createElement('span');
         el.className = 'ripple';
@@ -206,9 +208,10 @@
         el.style.height = size + 'px';
         el.style.left = (x - rect.left - size / 2) + 'px';
         el.style.top = (y - rect.top - size / 2) + 'px';
-        btn.style.position = btn.style.position || 'relative';
+        if (!btn.style.position) btn.style.position = 'relative';
         btn.appendChild(el);
-        el.addEventListener('animationend', () => el.remove());
+        el.addEventListener('animationend', () => el.remove(), { once: true });
+        setTimeout(() => { if (el.isConnected) el.remove(); }, 1200);
     }
 
     const bindOnce = (el, onClick, sound = 'click') => {
@@ -231,12 +234,8 @@
         if (scroller) scroller.scrollTop = 0;
     };
 
-    // Aborts whatever scan is currently running on the backend. Called when the
-    // user leaves a tool screen (back / Escape) so heavy disk work — Prefetch
-    // parsing, USN recovery, raw-hive reads — stops immediately instead of
-    // churning in the background unseen.
     const stopCurrentScan = () => {
-        try { window.pywebview.api.cancel_scan(); } catch (e) { /* bridge not ready */ }
+        try { window.pywebview.api.cancel_scan(); } catch (e) {  }
     };
 
     const isCancellation = (err) => /cancell/i.test(String(err?.message || err || ''));
@@ -264,10 +263,6 @@
             <div class="service-section-body">${body}</div>
         </section>`;
 
-    const riskClass = (score) => score >= 70 ? 'bad' : score >= 40 ? 'warn' : 'ok';
-
-    /* App-icon loading state shared by every tool: the app logo while a
-       scan runs. */
     const loadingState = (msg, sub) => `
         <div class="scanning-state">
             <div class="app-loader" role="status" aria-label="Loading">
@@ -277,9 +272,6 @@
             ${sub ? `<p class="scan-msg">${escapeHtml(sub)}</p>` : ''}
         </div>`;
 
-    /* ---------------------------------------------------------------- *
-     *  Theme & mute
-     * ---------------------------------------------------------------- */
     (function bindThemeAndMute() {
         const root = document.documentElement;
 
@@ -334,9 +326,6 @@
         });
     })();
 
-    /* ---------------------------------------------------------------- *
-     *  Generic modal
-     * ---------------------------------------------------------------- */
     const ui = {
         modal: $('modal'),
         modalIcon: $('modalIcon'),
@@ -348,18 +337,19 @@
         closeMainBtn: $('closeMainBtn'),
         serviceBackBtn: $('serviceBackBtn'),
         svcRescanBtn: $('svcRescanBtn'),
-        prefetchBackBtn: $('prefetchBackBtn'),
-        pfReload: $('pfReload'),
-        pfMissing: $('pfMissing'),
-        pfExport: $('pfExport'),
-        pfToolbar: $('pfToolbar'),
         altBackBtn: $('altBackBtn'),
         altRescanBtn: $('altRescanBtn'),
         altClearBtn: $('altClearBtn'),
         altExportBtn: $('altExportBtn'),
-        bamBackBtn: $('bamBackBtn'),
-        bamRescanBtn: $('bamRescanBtn'),
-        bamToolbar: $('bamToolbar'),
+        pfBackBtn: $('pfBackBtn'),
+        pfRescanBtn: $('pfRescanBtn'),
+        pfExportBtn: $('pfExportBtn'),
+        pfModal: $('pf-modal'),
+        pfModalTabs: $('pfModalTabs'),
+        pfModalBody: $('pfModalBody'),
+        pfModalSub: $('pfModalSub'),
+        pfModalIcon: $('pfModalIcon'),
+        pfModalCloseBtn: $('pfModalCloseBtn'),
         toolCards: $$('.tool-card'),
         mouseGlow: $('mouseGlow')
     };
@@ -400,31 +390,44 @@
         ui.modal.classList.add('active');
     }
 
-    /* ---------------------------------------------------------------- *
-     *  Mouse glow + card spotlight
-     * ---------------------------------------------------------------- */
     if (ui.mouseGlow && !document.documentElement.classList.contains('perf-low')) {
-        document.addEventListener('mousemove', (e) => {
-            ui.mouseGlow.style.left = e.clientX + 'px';
-            ui.mouseGlow.style.top = e.clientY + 'px';
+        let glowRaf = 0;
+        let glowX = 0, glowY = 0;
+        const paintGlow = () => {
+            glowRaf = 0;
+            ui.mouseGlow.style.transform = 'translate(' + (glowX - 260) + 'px,' + (glowY - 260) + 'px)';
             ui.mouseGlow.style.opacity = '1';
+        };
+        document.addEventListener('mousemove', (e) => {
+            glowX = e.clientX;
+            glowY = e.clientY;
+            if (!glowRaf) glowRaf = requestAnimationFrame(paintGlow);
         }, { passive: true });
         document.addEventListener('mouseleave', () => {
             ui.mouseGlow.style.opacity = '0';
         }, { passive: true });
     }
 
-    document.addEventListener('mousemove', e => {
-        $$('.tool-card').forEach(c => {
-            const r = c.getBoundingClientRect();
-            c.style.setProperty('--mx', ((e.clientX - r.left) / r.width * 100) + '%');
-            c.style.setProperty('--my', ((e.clientY - r.top) / r.height * 100) + '%');
-        });
-    }, { passive: true });
+    if (!document.documentElement.classList.contains('perf-very-low')) {
+        let cardRaf = 0;
+        let cardX = 0, cardY = 0;
+        document.addEventListener('mousemove', e => {
+            cardX = e.clientX;
+            cardY = e.clientY;
+            if (cardRaf) return;
+            cardRaf = requestAnimationFrame(() => {
+                cardRaf = 0;
+                const card = document.elementFromPoint(cardX, cardY)?.closest?.('.tool-card');
+                if (!card) return;
+                const r = card.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) {
+                    card.style.setProperty('--mx', ((cardX - r.left) / r.width * 100) + '%');
+                    card.style.setProperty('--my', ((cardY - r.top) / r.height * 100) + '%');
+                }
+            });
+        }, { passive: true });
+    }
 
-    /* ================================================================ *
-     *  SERVICE CHECKER
-     * ================================================================ */
     const SVC_ICONS = {
         boot: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
         drives: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>',
@@ -634,8 +637,7 @@
         if (svcBusy) return;
 
         const container = $('service-results');
-        // Re-entering the tool shows the last scan instead of rescanning,
-        // so navigating away mid-run never wastes a finished result.
+
         if (!force && svcResult) {
             renderServiceCheck(container, svcResult);
             return;
@@ -666,1466 +668,6 @@
         }
     };
 
-    /* ================================================================ *
-     *  PREFETCH PARSER
-     * ================================================================ */
-    const SIG_LABELS = { 0: 'Signed', 1: 'Unsigned', 2: 'Not Found', 3: 'Cheat', 4: 'Fake', 5: 'NotMZ' };
-    const SIG_CLASS = { 0: 'signed', 1: 'unsigned', 2: 'missing', 3: 'cheat', 4: 'fake', 5: 'notmz' };
-    const PRESENCE_LABELS = { 0: '', 1: 'Missing file', 2: 'Unresolved path', 3: 'Deleted .pf', 4: 'Leftover (no .pf)' };
-    const PRESENCE_SHORT = { 1: 'Missing', 2: 'Unresolved', 3: 'Deleted PF', 4: 'Ghost' };
-    const PRESENCE_CLASS = { 1: 'missing', 2: 'missing', 3: 'deleted', 4: 'ghost' };
-
-    const isCompactCard = (e) =>
-        !!(e.fileMissing || Number(e.presenceKind) > 0 || Number(e.mainSignatureStatus) === 2);
-
-    const sigBadge = (status) => {
-        const s = Number(status);
-        return `<span class="pf-badge ${SIG_CLASS[s] ?? 'warn'}">${SIG_LABELS[s] ?? 'Unknown'}</span>`;
-    };
-
-    const presenceBadge = (e, short) => {
-        const k = Number(e.presenceKind);
-        if (!k) return '';
-        const label = short ? (PRESENCE_SHORT[k] || 'Missing') : (PRESENCE_LABELS[k] || 'Missing');
-        return `<span class="pf-badge ${PRESENCE_CLASS[k] ?? 'missing'}">${label}</span>`;
-    };
-
-    const entryTone = (e) => {
-        const k = Number(e.presenceKind);
-        if (k === 4) return 'ghost';
-        if (k === 3 || e.wasDeleted) return 'deleted';
-        if (k === 1 || k === 2 || e.fileMissing) return 'missing';
-        const s = Number(e.mainSignatureStatus);
-        if (s === 3 || s === 4) return 'cheat';
-        if (s === 1 || s === 5) return 'unsigned';
-        return '';
-    };
-
-    const UNTRUSTED_SIGS = new Set([1, 3, 4, 5]);
-
-    let pfResult = null;
-    let pfBusy = false;
-    let pfState = { search: '', untrusted: false, risky: false, postlogon: false, yara: false, multi: false };
-    let pfDisplayed = [];
-    let pfMissingKind = 'all';
-    let pfMissingSearch = '';
-    let pfMissingPrevFocus = null;
-    let pfMissingDisplayed = [];
-
-    const setPfBusy = (busy) => {
-        pfBusy = busy;
-        const ready = !busy && !!pfResult && !pfResult.requiresAdmin;
-        if (ui.pfReload) {
-            ui.pfReload.disabled = busy;
-            ui.pfReload.hidden = busy;
-        }
-        if (ui.pfMissing) {
-            ui.pfMissing.disabled = busy;
-            ui.pfMissing.hidden = !ready;
-        }
-        if (ui.pfExport) {
-            ui.pfExport.disabled = busy || !ready;
-            ui.pfExport.hidden = !ready;
-        }
-        if (ui.pfToolbar) ui.pfToolbar.hidden = !ready;
-    };
-
-    const pfBanner = (title, sub, tone = 'warn') => `
-        <div class="svc-banner${tone === 'info' ? ' info' : ''}">
-            ${ICON.warning}
-            <div class="svc-banner-copy">
-                <strong>${title}</strong>
-                <p>${sub}</p>
-            </div>
-        </div>`;
-
-    const renderPrefetchSummary = (r) => {
-        const findings = r.highRisk || 0;
-        const missing = (r.notFound || 0) + (r.deletedCount || 0);
-        const leftovers = r.ghostCount || 0;
-        const shown = r.entries ? r.entries.length : 0;
-        const banners = [];
-        if (r.error && !r.requiresAdmin && r.error !== 'Scan cancelled.') {
-            banners.push(pfBanner('Scan warning', escapeHtml(r.error), 'info'));
-        }
-        if (r.parseFailures > 0) {
-            banners.push(pfBanner('Parse failures', `${r.parseFailures} Prefetch file${r.parseFailures === 1 ? '' : 's'} could not be parsed.`, 'info'));
-        }
-        if (r.deletedCount > 0) {
-            banners.push(pfBanner(
-                `${r.deletedCount} deleted Prefetch ${r.deletedCount === 1 ? 'entry' : 'entries'} recovered`,
-                'Pulled from the NTFS USN journal by file reference — hiding a .pf no longer hides execution.',
-                'info'
-            ));
-        }
-        if (r.usnJournalRecreated) {
-            banners.push(pfBanner('USN Journal recreated after boot', 'The change journal was created after boot — likely deleted and rebuilt to hide .pf activity.'));
-        }
-        if (r.evidenceGap) {
-            banners.push(pfBanner('Execution artifacts missing', 'Prefetch shows programs have run, but ShimCache and Amcache are both empty — a common evidence-wipe fingerprint.'));
-        }
-        if (r.usnJournalDisabled) {
-            banners.push(pfBanner('USN Journal disabled this session', 'Deleted Prefetch recovery and wipe correlation will be incomplete until the journal is recreated.'));
-        }
-        if (r.eventLogCleared && r.eventLogClears && r.eventLogClears.length) {
-            banners.push(pfBanner(
-                'Event log cleared this session',
-                escapeHtml(r.eventLogClears.map(c => (c.label || '') + (c.when ? ' at ' + c.when : '')).join(' · ')) + '.'
-            ));
-        }
-        if (r.ghostCount > 0) {
-            banners.push(pfBanner(
-                `${r.ghostCount} leftover execution${r.ghostCount === 1 ? '' : 's'} with no Prefetch`,
-                'Listed in ShimCache, Amcache with no matching .pf. Open Missing to review them.',
-                'info'
-            ));
-        }
-        if (r.timestompCount > 0) {
-            banners.push(pfBanner(
-                `${r.timestompCount} possible timestomped PE${r.timestompCount === 1 ? '' : 's'}`,
-                'Last-write time is in the future, pre-1995, or a round unsigned drop in a suspicious folder.'
-            ));
-        }
-        if (r.fakeSig > 0) {
-            banners.push(pfBanner(
-                `${r.fakeSig} fake or hash-mismatched signature${r.fakeSig === 1 ? '' : 's'}`,
-                'Authenticode is present but untrusted, revoked, or the digest does not match.'
-            ));
-        }
-
-        return `
-            <div class="svc-summary">
-                <div class="svc-stat">
-                    <span class="svc-stat-value">${r.total || 0}<small>/${shown}</small></span>
-                    <span class="svc-stat-label">Prefetch</span>
-                </div>
-                ${r.scanSeconds ? `<div class="svc-stat"><span class="svc-stat-value">${r.scanSeconds < 10 ? r.scanSeconds.toFixed(1) : Math.round(r.scanSeconds)}<small>s</small></span><span class="svc-stat-label">Scan time</span></div>` : ''}
-                <div class="svc-stat ${findings ? 'bad' : 'ok'}">
-                    <span class="svc-stat-value">${findings}</span>
-                    <span class="svc-stat-label">Findings</span>
-                </div>
-                <div class="svc-stat ${missing ? 'warn' : ''}">
-                    <span class="svc-stat-value">${missing}</span>
-                    <span class="svc-stat-label">Missing</span>
-                </div>
-                <div class="svc-stat ${leftovers ? 'bad' : ''}">
-                    <span class="svc-stat-value">${leftovers}</span>
-                    <span class="svc-stat-label">Leftovers</span>
-                </div>
-            </div>
-            ${banners.join('')}`;
-    };
-
-    const renderPfVersion = (e) => {
-        const parts = [];
-        if (e.fileDescription) parts.push(escapeHtml(e.fileDescription));
-        if (e.productName) parts.push(escapeHtml(e.productName));
-        if (e.companyName) parts.push(escapeHtml(e.companyName));
-        if (e.fileVersion) parts.push('v' + escapeHtml(e.fileVersion));
-        if (!parts.length) return '';
-        return `<div class="pf-row pf-ver-row"><span class="pf-key">Version</span><span class="pf-val">${parts.join(' &middot; ')}</span></div>`;
-    };
-
-    const YARA_META = (() => {
-        const DEFS = [
-            ['KNOWN_CHEAT_HASH',          'hash',    5, 'Exact known-cheat hash match (non-bypassable)'],
-            ['DYNAMIC_API_RESOLUTION',    'deep',    4, 'Import table stripped; APIs resolved at runtime'],
-            ['NO_IMPORT_PE',              'deep',    4, 'Executable image with no import directory'],
-            ['PE_OVERLAY_PAYLOAD',        'deep',    4, 'High-entropy payload appended past last section'],
-            ['PACKED_CODE_SECTION',       'deep',    4, 'Compressed / high-entropy executable code section'],
-            ['VIRTUALIZATION_DEBUGGING',  'deep',    4, 'Anti-debug primitives + VM/sandbox evasion'],
-            ['ENCODED_CHEAT_STRING',      'deep',    4, 'Known cheat brand present only in obfuscated form'],
-            ['KNOWN_CHEAT_NAME',          'deep',    4, 'File path matches a known cheat/injector artifact'],
-            ['NTDLL_UNHOOK',              'deep',    4, 'ntdll unhooking / direct-syscall evasion'],
-            ['LOW_LEVEL_INPUT_HOOK',      'clicker', 3, 'Low-level keyboard/mouse hook for input forging'],
-            ['AIMBOT_HINTS',              'aim',     3, 'SetCursorPos + input polling + aiming vocabulary'],
-            ['PE_RWX_SECTION',            'deep',    3, 'Executable section is writable (RWX)'],
-            ['INJECTOR_API',              'inject',  3, 'Process-injection API combination'],
-            ['PE_INJECT_COMBO',           'inject',  3, 'Open/read/write/virtual-alloc remote-process combo'],
-            ['MANUAL_MAP_HINTS',          'inject',  3, 'Manual-mapping / reflective-loader markers'],
-            ['THREAD_HIJACK_HINTS',       'inject',  3, 'Thread suspension + context manipulation'],
-            ['MEMORY_MODULE_HINTS',       'inject',  3, 'Memory-module / reflective loader strings'],
-            ['GAME_OVERLAY_ABUSE',        'inject',  3, 'Game-overlay hijacked to inject/bypass'],
-            ['KDMAPPER_LIKE',             'mapper',  3, 'Known vulnerable-driver / mapper markers'],
-            ['DRIVER_LOAD_ABUSE',         'mapper',  3, 'Service/driver-loading abuse'],
-            ['TOKEN_STEAL_PRIV',          'mapper',  3, 'Token-stealing privilege adjustment'],
-            ['NTDLL_UNDOCUMENTED',        'mapper',  3, 'Undocumented ntdll usage + open-process'],
-            ['AUTOCLICKER',               'clicker', 2, 'Autoclicker UI/markers'],
-            ['CSHARP_CLICKER',            'clicker', 2, '.NET autoclicker heuristics'],
-            ['CLICK_INPUT_COMBO',         'clicker', 2, 'Mouse/input injection combo'],
-            ['NULL_FORKED_RECOVERY',      'clicker', 2, 'Recovery-clicker marker'],
-            ['HIGH_ENTROPY_UNSIGNED_PE',  'entropy', 2, 'Unsigned, very high-entropy image'],
-            ['HIGH_ENTROPY_SECTION',      'entropy', 2, 'High-entropy section in unsigned image'],
-            ['PE_HIGH_ENTROPY_NO_SIG_HINT', 'entropy', 2, 'High-entropy, unsigned, no signature hint'],
-            ['STRING_CLEANER_PACKER',     'entropy', 2, 'Packer / string-cleaner markers'],
-            ['CHEAT',                     'ioc',     1, 'Known cheat indicator string'],
-            ['JAVA_AGENT_CHEAT',          'ioc',     1, 'Java agent / JVMTI cheat loader'],
-            ['DLL_SIDELOAD_NAMES',        'ioc',     1, 'Sideloadable DLL name set'],
-            ['SUSPICIOUS_MUTEX',          'ioc',     1, 'Known cheat mutex / event names'],
-            ['PROCESS_DOPPELGANGING',     'inject',  4, 'Transacted-section process injection'],
-            ['SCREENSHARE_EVASION',       'ioc',     4, 'Panic key / screenshare-hiding vocabulary'],
-            ['NETWORK_C2',                'ioc',     3, 'Cheat CDN / C2 / webhook endpoints'],
-            ['REGISTRY_PERSISTENCE',      'ioc',     3, 'Registry Run-key persistence'],
-            ['WMI_PERSISTENCE',           'ioc',     3, 'WMI event-subscription persistence'],
-            ['DOTNET_CHEAT_FRAMEWORK',    'ioc',     3, '.NET cheat framework / hooking libs'],
-            ['KEYSTROKE_LOGGER',          'ioc',     3, 'Keystroke polling + window-title capture'],
-            ['WINDOW_CAPTURE_EVASION',    'ioc',     3, 'SetWindowDisplayAffinity capture exclusion'],
-            ['VEH_INJECTION_HINTS',       'inject',  3, 'VEH + thread-context injection pattern'],
-            ['POWERSHELL_STAGER',         'ioc',     3, 'Encoded PowerShell download-and-execute'],
-            ['ANTI_AMSI_ETW',             'ioc',     3, 'AMSI / ETW neutralization vocabulary'],
-            ['DLL_SIDELOAD_TECHNIQUE',    'ioc',     2, 'Sideloadable DLL name outside OS dirs'],
-            ['MC_ESP_HINTS',              'aim',     2, 'MC packet classes + ESP/wallhack vocabulary'],
-        ];
-        const map = {};
-        for (const [n, c, s, l] of DEFS) map[n] = { cat: c, sev: s, label: l };
-        return { get: (n) => map[n] || { cat: 'ioc', sev: 1, label: n } };
-    })();
-
-    const renderYaraTags = (rules) => {
-        if (!rules || !rules.length) return '';
-        const sorted = [...rules].sort((a, b) => YARA_META.get(b).sev - YARA_META.get(a).sev);
-        const items = sorted.map(r => {
-            const m = YARA_META.get(r);
-            return `<span class="pf-yara ${m.cat}" data-sev="${m.sev}" title="${escapeHtml(m.label)}">` +
-                   `<span class="pf-yara-dot"></span>${escapeHtml(r)}` +
-                   `</span>`;
-        }).join('');
-        return `<div class="pf-yara-row"><span class="pf-key">YARA</span><div class="pf-yara-tags">${items}</div></div>`;
-    };
-
-    const renderPrefetchEntry = (e) => {
-        const hot = Number(e.mainSignatureStatus) === 3 || Number(e.mainSignatureStatus) === 4;
-        return `
-            <article class="pf-entry ${entryTone(e)}${hot ? ' is-open' : ''}">
-                <button type="button" class="pf-entry-toggle" aria-expanded="${hot ? 'true' : 'false'}">
-                    <span class="svc-dot ${riskClass(e.riskScore)}"></span>
-                    <div class="pf-entry-title">
-                        <span class="pf-name">${escapeHtml(e.pfFileName)}</span>
-                        <span class="pf-entry-path">${escapeHtml(e.mainExecutablePath || e.lastSeenPath || '')}</span>
-                    </div>
-                    ${presenceBadge(e, true)}${sigBadge(e.mainSignatureStatus)}
-                    <span class="pf-score ${riskClass(e.riskScore)}">${e.riskScore}</span>
-                </button>
-                <div class="pf-entry-body">
-                    ${e.riskSummary ? `<div class="pf-row"><span class="pf-key">Risk</span><span class="pf-val">${escapeHtml(e.riskSummary)}</span></div>` : ''}
-                    <div class="pf-row"><span class="pf-key">Executable</span><span class="pf-val">${escapeHtml(e.mainExecutablePath)}</span>${presenceBadge(e, false)}${sigBadge(e.mainSignatureStatus)}</div>
-                    ${e.signatureDetail && (e.fileMissing || Number(e.presenceKind) > 0 || Number(e.mainSignatureStatus) !== 0) ? `<div class="pf-row pf-detail-row"><span class="pf-key">Why</span><span class="pf-val">${escapeHtml(e.signatureDetail)}</span></div>` : ''}
-                    ${e.lastSeenPath && e.lastSeenPath !== e.mainExecutablePath ? `<div class="pf-row"><span class="pf-key">Last seen</span><span class="pf-val">${escapeHtml(e.lastSeenPath)}</span></div>` : ''}
-                    ${e.lastSeenSource || e.lastSeenTime ? `<div class="pf-row"><span class="pf-key">Evidence</span><span class="pf-val">${escapeHtml([e.lastSeenSource, e.lastSeenTime].filter(Boolean).join(' · '))}</span></div>` : ''}
-                    ${e.amcachePublisher ? `<div class="pf-row"><span class="pf-key">Publisher</span><span class="pf-val">${escapeHtml(e.amcachePublisher)} <span class="pf-hint">(Amcache metadata, not Authenticode)</span></span></div>` : ''}
-                    ${e.resolvedFrom ? `<div class="pf-row pf-ver-row"><span class="pf-key">Resolved</span><span class="pf-val">${escapeHtml(e.resolvedFrom)}</span></div>` : ''}
-                    ${e.sha256 ? `<div class="pf-row pf-ver-row"><span class="pf-key">SHA-256</span><span class="pf-val">${escapeHtml(e.sha256)}</span></div>` : ''}
-                    ${e.pfPath && String(e.pfPath).startsWith('(') ? `<div class="pf-row pf-ver-row"><span class="pf-key">.pf</span><span class="pf-val">${escapeHtml(e.pfPath)}</span></div>` : ''}
-                    ${renderPfVersion(e)}
-                    ${renderYaraTags(e.matchedRules)}
-                    <div class="pf-meta">
-                        <span class="pf-chip">v${e.version}</span>
-                        <button type="button" class="pf-chip pf-runs-chip" data-runsidx="${e.__idx}" ${e.runCount > 0 ? 'title="View run history"' : ''}>Runs: ${e.runCount}</button>
-                        ${e.lastExecutionTimes && e.lastExecutionTimes.length ? `<span class="pf-chip">Last: ${escapeHtml(e.lastExecutionTimes[0])}</span>` : ''}
-                        ${e.inShimCache ? `<span class="pf-chip ok">In ShimCache</span>` : ''}
-                        ${e.inAmcache ? `<span class="pf-chip ok">In Amcache</span>` : ''}
-                        ${e.inBam ? `<span class="pf-chip ok">In BAM</span>` : ''}
-                        ${e.timestomped ? `<span class="pf-chip bad">Timestomp</span>` : ''}
-                        ${e.artifactLeftover ? `<span class="pf-chip bad">Artifact leftover</span>` : ''}
-                        ${e.unsignedInMinecraftPath ? `<span class="pf-chip bad">Unsigned in MC path</span>` : ''}
-                        ${e.unsignedReferenced >= 3 ? `<span class="pf-chip warn">${e.unsignedReferenced} unsigned refs</span>` : ''}
-                        ${e.suspiciousReferenced > 0 ? `<span class="pf-chip bad">${e.suspiciousReferenced} suspicious refs</span>` : ''}
-                        ${e.multiVolume ? `<span class="pf-chip warn">Multi-volume</span>` : ''}
-                        ${e.wasDeleted ? `<span class="pf-chip deleted" title=".pf was deleted; execution recovered from USN">DELETED (recovered)</span>` : ''}
-                        ${Number(e.presenceKind) === 4 ? `<span class="pf-chip ghost">Ghost leftover</span>` : ''}
-                        ${e.integrityMismatch ? `<span class="pf-chip bad" title="Referenced-file count does not match file-metrics — the .pf may have been rebuilt">Integrity mismatch</span>` : ''}
-                        ${e.directoryCount ? `<span class="pf-chip">${e.directoryCount} dirs</span>` : ''}
-                        ${e.volumeCount ? `<span class="pf-chip">${e.volumeCount} vol${e.volumeCount > 1 ? 's' : ''}</span>` : ''}
-                        ${e.isHidden || e.isSystem ? `<span class="pf-chip warn" title="File attributes tampered">Hidden/System</span>` : ''}
-                        ${e.isReadOnly ? `<span class="pf-chip warn" title="File set read-only">Read-only</span>` : ''}
-                        ${e.duplicateOf ? `<span class="pf-chip bad" title="Identical content to: ${escapeHtml(e.duplicateOf)}">Duplicate</span>` : ''}
-                        ${e.renamedFile ? `<span class="pf-chip bad" title="Header exe name (${escapeHtml(e.headerExeName || '')}) differs from the .pf filename — the .pf was renamed after creation">Renamed .pf</span>` : ''}
-                        ${e.prefetchHashMismatch ? `<span class="pf-chip bad" title="Stored prefetch hash (0x4C) does not match the hash string Windows hashed (${escapeHtml(e.hashString || 'n/a')}) — the .pf header or filename was altered after creation">Hash mismatch</span>` : ''}
-                        ${e.isBootPrefetch ? `<span class="pf-chip" title="Boot-time prefetch entry (OS-generated, not user activity)">Boot</span>` : ''}
-                        ${e.executableLoadedRefs > 0 ? `<span class="pf-chip warn" title="${e.executableLoadedRefs} referenced file(s) outside OS dirs were loaded as executable images with invalid signatures — possible injection marker">${e.executableLoadedRefs} exec-loaded ref</span>` : ''}
-                        ${e.traceChainCount ? `<span class="pf-chip" title="${e.traceChainCount} trace chains · ${Number(e.totalBlockLoads || 0).toLocaleString()} total block loads · max chain depth ${e.maxChainDepth || 0}">${e.traceChainCount} chains</span>` : ''}
-                        ${e.directoryNames && e.directoryNames.length ? `<span class="pf-chip" title="${escapeHtml(e.directoryNames.join(' · '))}">${e.directoryNames.length} dir${e.directoryNames.length > 1 ? 's' : ''}</span>` : ''}
-                    </div>
-                    ${hasReferencedFiles(e) ? `<button type="button" class="pf-ref-btn" data-refidx="${e.__idx}">Referenced files (${referencedFileCount(e)})</button>` : ''}
-                </div>
-            </article>`;
-    };
-
-    const renderCompactPrefetchEntry = (e) => {
-        const path = e.lastSeenPath || e.mainExecutablePath || e.pfPath || '';
-        const when = e.lastSeenTime || (e.lastExecutionTimes && e.lastExecutionTimes[0]) || '';
-        const src = e.lastSeenSource || '';
-        const meta = [src, when].filter(Boolean).join(' · ');
-        return `
-            <section class="pf-entry pf-compact ${entryTone(e)}" data-missidx="${e.__missidx}" tabindex="0" role="button">
-                <div class="pf-compact-line">
-                    <span class="pf-compact-name" title="${escapeHtml(e.pfFileName || '')}">${escapeHtml(e.pfFileName || '')}</span>
-                    ${e.renamedFile ? `<span class="pf-chip bad" title="Header exe name (${escapeHtml(e.headerExeName || '')}) differs from the filename — renamed after creation">Renamed</span>` : ''}
-                    ${presenceBadge(e, true)}${sigBadge(e.mainSignatureStatus)}
-                    <span class="pf-score pf-compact-score ${riskClass(e.riskScore)}">${e.riskScore}</span>
-                </div>
-                <div class="pf-compact-line pf-compact-sub">
-                    <span class="pf-compact-path" title="${escapeHtml(path)}">${escapeHtml(path)}</span>
-                    ${meta ? `<span class="pf-compact-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)}</span>` : ''}
-                </div>
-            </section>`;
-    };
-
-    const getFilteredEntries = () => {
-        if (!pfResult) return [];
-        const q = pfState.search.toLowerCase();
-        const isUntrusted = (s) => UNTRUSTED_SIGS.has(Number(s));
-        let base = pfResult.entries || [];
-        if (pfResult.recoveredDeleted && pfResult.recoveredDeleted.length)
-            base = base.concat(pfResult.recoveredDeleted);
-        if (pfResult.ghostEntries && pfResult.ghostEntries.length)
-            base = base.concat(pfResult.ghostEntries);
-
-        let list = base.filter(e => {
-            if (isCompactCard(e)) return false;
-            if (pfState.risky && e.riskScore < 50) return false;
-            if (pfState.untrusted && !isUntrusted(e.mainSignatureStatus)) return false;
-            if (pfState.postlogon && !((e.lastExecUnix || e.firstExecUnix || 0) > pfResult.logonTime)) return false;
-            if (pfState.yara && !(e.matchedRules && e.matchedRules.length)) return false;
-            if (pfState.multi && !(e.riskFlags && (e.riskFlags & 0x800))) return false;
-
-            if (q) {
-                const hay = [
-                    e.pfFileName, e.mainExecutablePath, e.lastSeenPath, e.pfPath,
-                    e.signatureDetail, e.amcachePublisher, e.resolvedFrom,
-                    SIG_LABELS[Number(e.mainSignatureStatus)] || '',
-                    PRESENCE_LABELS[Number(e.presenceKind)] || '',
-                    e.riskSummary || '', e.sha256 || '',
-                    (e.matchedRules && e.matchedRules.length) ? e.matchedRules.join(' ') : ''
-                ].join(' ').toLowerCase();
-                if (!hay.includes(q)) return false;
-            }
-            return true;
-        });
-
-        const sigRank = (s) => {
-            s = Number(s);
-            if (s === 5) return 5;
-            if (s === 3 || s === 4) return 4;
-            if (s === 1) return 3;
-            if (s === 2) return 2;
-            return 1;
-        };
-        list.sort((a, b) =>
-            (sigRank(b.mainSignatureStatus) - sigRank(a.mainSignatureStatus)) ||
-            ((b.riskScore || 0) - (a.riskScore || 0)) ||
-            (a.pfFileName || '').localeCompare(b.pfFileName || ''));
-        return list;
-    };
-
-    const collectMissingEntries = () => {
-        if (!pfResult) return [];
-        let base = pfResult.entries || [];
-        if (pfResult.recoveredDeleted && pfResult.recoveredDeleted.length)
-            base = base.concat(pfResult.recoveredDeleted);
-        if (pfResult.ghostEntries && pfResult.ghostEntries.length)
-            base = base.concat(pfResult.ghostEntries);
-        return base.filter(isCompactCard);
-    };
-
-    const missingKindOf = (e) => {
-        const k = Number(e.presenceKind);
-        if (k === 4) return 'ghost';
-        if (k === 3 || e.wasDeleted) return 'deleted';
-        if (k === 2) return 'unresolved';
-        return 'missing';
-    };
-
-    const updateMissingCount = () => {
-        const n = collectMissingEntries().length;
-        const el = $('pfMissingCount');
-        if (!el) return;
-        el.textContent = String(n);
-        el.classList.toggle('is-empty', n === 0);
-    };
-
-    const renderMissingPopupList = () => {
-        const body = $('pfMissingBody');
-        if (!body) return;
-        const q = pfMissingSearch.toLowerCase();
-        let list = collectMissingEntries();
-        if (pfMissingKind !== 'all')
-            list = list.filter(e => missingKindOf(e) === pfMissingKind);
-        if (q) {
-            list = list.filter(e => {
-                const hay = [
-                    e.pfFileName, e.mainExecutablePath, e.lastSeenPath, e.pfPath,
-                    e.signatureDetail, e.lastSeenSource, e.amcachePublisher
-                ].join(' ').toLowerCase();
-                return hay.includes(q);
-            });
-        }
-        list.sort((a, b) =>
-            ((b.riskScore || 0) - (a.riskScore || 0)) ||
-            (a.pfFileName || '').localeCompare(b.pfFileName || ''));
-        list.forEach((e, i) => { e.__missidx = i; });
-        pfMissingDisplayed = list;
-        if (!list.length) {
-            pfMissingDisplayed = [];
-            body.innerHTML = `<div class="scanning-state"><p>${collectMissingEntries().length ? 'No entries match this filter.' : 'No missing, not-found, or leftover Prefetch evidence.'}</p></div>`;
-            return;
-        }
-        const groups = { missing: [], unresolved: [], deleted: [], ghost: [] };
-        list.forEach(e => groups[missingKindOf(e)].push(e));
-        const titles = {
-            missing: 'Missing file',
-            unresolved: 'Unresolved path',
-            deleted: 'Deleted .pf',
-            ghost: 'Leftover (no .pf)'
-        };
-        let html = '';
-        for (const key of ['ghost', 'deleted', 'missing', 'unresolved']) {
-            if (!groups[key].length) continue;
-            html += `<div class="pf-compact-block">` +
-                `<div class="pf-compact-head">${titles[key]} — ${groups[key].length}</div>` +
-                `<div class="pf-compact-list">${groups[key].map(renderCompactPrefetchEntry).join('')}</div>` +
-                `</div>`;
-        }
-        body.innerHTML = html;
-        body.querySelectorAll('.pf-entry').forEach(el => el.classList.add('revealed'));
-    };
-
-    const openMissingModal = () => {
-        const modal = $('pf-missing-modal');
-        if (!modal) return;
-        modal.classList.add('active');
-        modal.setAttribute('aria-hidden', 'false');
-        ui.pfMissing?.setAttribute('aria-expanded', 'true');
-        pfMissingPrevFocus = document.activeElement;
-        SoundFX.modalOpen();
-        renderMissingPopupList();
-        const search = $('pfMissingSearch');
-        if (search) {
-            search.value = pfMissingSearch;
-            setTimeout(() => search.focus(), 30);
-        }
-    };
-
-    const closeMissingModal = () => {
-        const modal = $('pf-missing-modal');
-        if (!modal) return;
-        modal.classList.remove('active');
-        modal.setAttribute('aria-hidden', 'true');
-        ui.pfMissing?.setAttribute('aria-expanded', 'false');
-        SoundFX.modalClose();
-        if (pfMissingPrevFocus && typeof pfMissingPrevFocus.focus === 'function') {
-            try { pfMissingPrevFocus.focus(); } catch { }
-        }
-        pfMissingPrevFocus = null;
-    };
-
-    const renderPrefetch = () => {
-        const container = $('prefetch-results');
-        const hasAny = pfResult && (
-            (pfResult.entries && pfResult.entries.length) ||
-            (pfResult.recoveredDeleted && pfResult.recoveredDeleted.length) ||
-            (pfResult.ghostEntries && pfResult.ghostEntries.length) ||
-            (pfResult.ghostArtifacts && pfResult.ghostArtifacts.length)
-        );
-        updateMissingCount();
-        if (!hasAny) {
-            container.innerHTML = `<div class="scanning-state"><p>No Prefetch files found.</p></div>`;
-            return;
-        }
-        const list = getFilteredEntries();
-        const displayResult = { ...pfResult, entries: list };
-        if (!list.length) {
-            container.innerHTML = renderPrefetchSummary(displayResult) +
-                `<div class="scanning-state"><p>No on-disk Prefetch entries match the current filters. Open Missing for deleted, leftover, or not-found evidence.</p></div>`;
-            revealSections(container);
-            return;
-        }
-        pfDisplayed = list.map((e, i) => ({ ...e, __idx: i }));
-        container.innerHTML = renderPrefetchSummary(displayResult) +
-            `<section class="service-section">
-                <div class="service-section-header">
-                    <span class="service-section-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M20.5 20.5l-4-4"/></svg></span>
-                    <h3>Executions</h3>
-                    <span class="svc-section-meta">${list.length} shown</span>
-                </div>
-                <div class="service-section-body pf-list">${pfDisplayed.map(renderPrefetchEntry).join('')}</div>
-            </section>`;
-        revealSections(container);
-        container.querySelectorAll('.pf-entry').forEach((el, i) => {
-            setTimeout(() => el.classList.add('revealed'), Math.min(24 * i, 280));
-        });
-    };
-
-    const bindPrefetchResults = () => {
-        const container = $('prefetch-results');
-        if (!container || container.dataset.pfBound === '1') return;
-        container.dataset.pfBound = '1';
-        container.addEventListener('click', (e) => {
-            const toggle = e.target.closest('.pf-entry-toggle');
-            if (toggle && container.contains(toggle)) {
-                const card = toggle.closest('.pf-entry');
-                if (!card) return;
-                const open = card.classList.toggle('is-open');
-                toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-                return;
-            }
-            const refBtn = e.target.closest('.pf-ref-btn');
-            if (refBtn && container.contains(refBtn)) {
-                SoundFX.tool();
-                addRipple(refBtn, e.clientX, e.clientY);
-                const entry = pfDisplayed[Number(refBtn.dataset.refidx)];
-                if (entry) openReferencedFiles(entry);
-                return;
-            }
-            const runChip = e.target.closest('.pf-runs-chip');
-            if (runChip && container.contains(runChip)) {
-                SoundFX.tool();
-                addRipple(runChip, e.clientX, e.clientY);
-                const entry = pfDisplayed[Number(runChip.dataset.runsidx)];
-                if (entry) openRunsModal(entry);
-            }
-        });
-    };
-
-    const openPrefetchParser = async (force = false) => {
-        showScreen('prefetch-screen');
-        if (pfBusy) return;
-        if (!force && pfResult) {
-            renderPrefetch();
-            return;
-        }
-        const container = $('prefetch-results');
-        pfResult = null;
-        setPfBusy(true);
-        container.innerHTML = loadingState(
-            'Parsing Prefetch files…',
-            'Signatures, USN recovery, ShimCache, Amcache and YARA');
-
-        try {
-            const result = await window.pywebview.api.prefetch_parser_run();
-            if (!result) throw new Error('No output returned.');
-
-            const hasAny = (result.entries && result.entries.length)
-                || (result.recoveredDeleted && result.recoveredDeleted.length)
-                || (result.ghostEntries && result.ghostEntries.length)
-                || (result.ghostArtifacts && result.ghostArtifacts.length);
-
-            if (result.error && result.requiresAdmin) {
-                container.innerHTML = `
-                    <div class="scanning-state">
-                        <p class="scan-msg">${ICON.lock} ${escapeHtml(result.error)}</p>
-                        <button class="pf-admin-btn" id="pfRelaunchAdmin">
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>
-                            Restart as Administrator
-                        </button>
-                    </div>`;
-                const btn = $('pfRelaunchAdmin');
-                if (btn) {
-                    btn.addEventListener('mouseenter', () => SoundFX.hover());
-                    btn.addEventListener('click', async (e) => {
-                        SoundFX.tool();
-                        addRipple(btn, e.clientX, e.clientY);
-                        await window.pywebview.api.relaunch_as_admin();
-                    });
-                }
-                return;
-            }
-
-            if (result.error && !hasAny) {
-                container.innerHTML = `
-                    <div class="scanning-state">
-                        <p>${escapeHtml(result.error)}</p>
-                    </div>`;
-                return;
-            }
-
-            pfResult = result;
-            renderPrefetch();
-        } catch (err) {
-            container.innerHTML = isCancellation(err)
-                ? '<div class="scanning-state"><p>Scan stopped.</p></div>'
-                : `<div class="scanning-state"><p>Error running scan: ${escapeHtml(err.message || err)}</p></div>`;
-        } finally {
-            setPfBusy(false);
-        }
-    };
-
-    /* --- Prefetch info modal --- */
-    const showPfInfo = (title, iconHtml, bodyHtml) => {
-        const modal = $('pf-info-modal');
-        $('pfInfoIcon').innerHTML = iconHtml || '';
-        $('pfInfoTitle').textContent = title;
-        $('pfInfoBody').innerHTML = bodyHtml;
-        modal.classList.add('active');
-        modal.setAttribute('aria-hidden', 'false');
-        SoundFX.modalOpen();
-    };
-
-    const closePfInfo = () => {
-        const modal = $('pf-info-modal');
-        modal.classList.remove('active');
-        modal.setAttribute('aria-hidden', 'true');
-        SoundFX.modalClose();
-    };
-
-    const renderUsnRows = (q, events) => {
-        const unique = new Map();
-        (events || []).forEach(e => {
-            const key = `${e.action}|${e.oldName}|${e.newName}|${e.timestamp}|${e.reason}`;
-            if (!unique.has(key)) unique.set(key, e);
-        });
-        const list = [...unique.values()].reverse();
-        const rowHtml = (e) => `
-            <div class="usn-row">
-                <span class="usn-action ${e.isPrefetchDir ? 'dir' : ''}">${escapeHtml(e.action)}</span>
-                <span class="usn-name">${escapeHtml(e.oldName || '')}${e.newName ? ' → ' + escapeHtml(e.newName) : ''}</span>
-                <span class="usn-time">${escapeHtml(e.timestamp || '')}</span>
-                ${e.reason ? `<span class="usn-reason" title="${escapeHtml(e.reason)}">${escapeHtml(e.reason)}</span>` : ''}
-            </div>`;
-        const query = (q || '').toLowerCase();
-        const filtered = list.filter(e =>
-            !query ||
-            (e.action || '').toLowerCase().includes(query) ||
-            (e.oldName || '').toLowerCase().includes(query) ||
-            (e.newName || '').toLowerCase().includes(query) ||
-            (e.timestamp || '').toLowerCase().includes(query) ||
-            (e.reason || '').toLowerCase().includes(query));
-        if (!filtered.length) return `<div class="scanning-state"><p>No matching USN events.</p></div>`;
-        return filtered.map(rowHtml).join('');
-    };
-
-    const renderUsnModal = (payload) => {
-        const events = Array.isArray(payload) ? payload : (payload && payload.events) || [];
-        const error = Array.isArray(payload) ? null : (payload && payload.error);
-        const truncated = !Array.isArray(payload) && !!payload?.truncated;
-        if (error && !events.length) {
-            return `<div class="scanning-state"><p>${escapeHtml(error)}</p></div>`;
-        }
-        if (!events.length) {
-            return `<div class="scanning-state"><p>No Prefetch (.pf) delete, rename, or security activity since boot.</p></div>`;
-        }
-        const count = new Set((events || []).map(e => `${e.action}|${e.oldName}|${e.newName}|${e.timestamp}|${e.reason}`)).size;
-        return `
-            ${truncated ? `<p class="pf-warn-note">${ICON.warning}<span>Journal window was truncated — older events may be missing.</span></p>` : ''}
-            <div class="pf-ref-toolbar">
-                <input id="pfUsnSearch" class="pf-search" type="search" placeholder="Search USN events…" spellcheck="false" autocomplete="off">
-                <span class="pf-ref-count">${count}</span>
-            </div>
-            <div class="usn-list pf-ref-list">${renderUsnRows('', events)}</div>`;
-    };
-
-    const renderSysMainModal = (sm) => {
-        const val = (k) => escapeHtml(sm[k] != null ? String(sm[k]) : '-');
-        return `
-            <div class="pf-kv">
-                <div class="kv-row"><span class="kv-key">Service</span><span class="kv-val">${escapeHtml(sm.serviceName || 'SysMain')}</span></div>
-                <div class="kv-row"><span class="kv-key">Status</span><span class="kv-val ${sm.status === 'Running' ? 'ok' : 'warn'}">${val('status')}</span></div>
-                <div class="kv-row"><span class="kv-key">PID</span><span class="kv-val">${val('pid')}</span></div>
-                <div class="kv-row"><span class="kv-key">Uptime</span><span class="kv-val">${val('uptime')}</span></div>
-                <div class="kv-row"><span class="kv-key">Logon Time</span><span class="kv-val">${val('logonTime')}</span></div>
-                <div class="kv-row"><span class="kv-key">Started after logon</span><span class="kv-val ${sm.delayedStart ? 'bad' : 'ok'}">${sm.delayedStart ? 'Yes' : 'No'}</span></div>
-            </div>
-            ${sm.delayedStart ? `<p class="pf-warn-note">${ICON.warning}<span>SysMain started more than two minutes after user logon — a common sign of tampering.</span></p>` : ''}`;
-    };
-
-    const renderUsnStatusModal = (u) => {
-        const val = (k) => escapeHtml(u[k] != null ? String(u[k]) : '-');
-        const recreated = !!u.journalRecreated;
-        const disabled = u.journalEnabled === false;
-        const journalFile = u.journalFileExists ? 'Present' : (u.journalEnabled ? 'Unknown' : 'Missing');
-        const journalFileClass = u.journalFileExists ? 'ok' : (u.journalEnabled ? '' : 'bad');
-        return `
-            <div class="pf-kv">
-                <div class="kv-row"><span class="kv-key">Journal Enabled</span><span class="kv-val ${disabled ? 'bad' : 'ok'}">${u.journalEnabled ? 'Yes' : 'No'}</span></div>
-                <div class="kv-row"><span class="kv-key">Journal File ($UsnJrnl)</span><span class="kv-val ${journalFileClass}">${journalFile}</span></div>
-                <div class="kv-row"><span class="kv-key">Journal Created</span><span class="kv-val">${val('journalCreationTime')}</span></div>
-                <div class="kv-row"><span class="kv-key">System Boot Time</span><span class="kv-val">${val('bootTime')}</span></div>
-                <div class="kv-row"><span class="kv-key">Journal recreated after boot</span><span class="kv-val ${recreated ? 'bad' : 'ok'}">${recreated ? 'Yes' : 'No'}</span></div>
-                ${u.journalId ? `<div class="kv-row"><span class="kv-key">Journal ID</span><span class="kv-val">${escapeHtml(String(u.journalId))}</span></div>` : ''}
-                ${u.statusDetail ? `<div class="kv-row"><span class="kv-key">Detail</span><span class="kv-val">${val('statusDetail')}</span></div>` : ''}
-            </div>
-            ${recreated ? `<p class="pf-warn-note">${ICON.warning}<span>USN Journal was created after system boot — the journal was likely deleted and rebuilt to hide .pf deletions/renames.</span></p>` : ''}
-            ${disabled || !u.journalEnabled ? `<p class="pf-warn-note">${ICON.warning}<span>USN Journal is disabled or inaccessible — prefetch tampering cannot be audited.</span></p>` : ''}
-            ${u.error ? `<p class="pf-warn-note">${escapeHtml(u.error)}</p>` : ''}`;
-    };
-
-    const renderArtifactsModal = (data) => {
-        const shim = data && data.shimCache ? data.shimCache : [];
-        const am = data && data.amcache ? data.amcache : [];
-        const shimLoaded = !!(data && data.shimLoaded);
-        const amLoaded = !!(data && data.amLoaded);
-        const isAdmin = !!(data && data.isAdmin);
-        const bad = (p) => /\\temp\\|\\tmp\\|\\downloads\\|\\public\\|\\recycle/i.test(p || '');
-
-        const artRow = (key, path, keyClass, metaHtml) => `
-            <div class="art-row">
-                <div class="art-row-main">
-                    <span class="art-row-key ${keyClass}" title="${key}">${key}</span>
-                    <span class="art-row-path" title="${path}">${path}</span>
-                </div>
-                ${metaHtml ? `<span class="art-row-meta">${metaHtml}</span>` : ''}
-            </div>`;
-
-        const shimRows = (q) => {
-            const query = (q || '').toLowerCase();
-            const list = shim.filter(e => !query || (e.path || '').toLowerCase().includes(query));
-            if (!list.length) {
-                return `<div class="scanning-state"><p>${query
-                    ? 'No matching ShimCache entries.'
-                    : (shimLoaded ? 'ShimCache is empty on this machine.' : 'ShimCache could not be read.')}</p></div>`;
-            }
-            return list.map(e => artRow(
-                escapeHtml(e.modified || 'no-ts'),
-                escapeHtml(e.path || ''),
-                bad(e.path) ? 'bad' : 'dir',
-                `${e.execFlag ? '<span class="shim-exec">ran</span>' : ''}${e.hasTimestamp ? '' : '<span class="shim-nots">no-ts</span>'}<span class="shim-fmt">${escapeHtml(e.format || '')}</span>`
-            )).join('');
-        };
-
-        const amRows = (q) => {
-            const query = (q || '').toLowerCase();
-            const fmtSize = (s) => {
-                if (!s) return '';
-                return s >= 1048576 ? (s / 1048576).toFixed(1) + ' MB'
-                    : s >= 1024 ? Math.round(s / 1024) + ' KB'
-                    : s + ' B';
-            };
-            const list = am.filter(e => !query ||
-                (e.name || '').toLowerCase().includes(query) ||
-                (e.path || '').toLowerCase().includes(query) ||
-                (e.publisher || '').toLowerCase().includes(query));
-            if (!list.length) {
-                return `<div class="scanning-state"><p>${query
-                    ? 'No matching Amcache entries.'
-                    : (amLoaded ? 'Amcache loaded, but no application-file records were found.'
-                        : (isAdmin ? 'Amcache.hve could not be read (backup privilege or hive lock).'
-                            : 'Amcache requires Administrator.'))}</p></div>`;
-            }
-            return list.map(e => artRow(
-                escapeHtml(e.name || e.path || ''),
-                escapeHtml(e.path || ''),
-                e.isDriver ? 'sys' : e.badPath ? 'bad' : 'dir',
-                `${e.publisher ? '<span class="shim-fmt" title="Publisher">' + escapeHtml(e.publisher) + '</span>' : ''}${e.isDriver ? '<span class="shim-exec">driver</span>' : ''}${e.hasInstallRecord ? '<span class="shim-exec">installed</span>' : ''}${e.badPath ? '<span class="shim-nots">bad-path</span>' : ''}${e.size ? '<span class="shim-fmt" title="Size">' + fmtSize(e.size) + '</span>' : ''}${e.sha1 ? '<span class="shim-fmt shim-hash" title="SHA-1">' + escapeHtml(e.sha1) + '</span>' : ''}`
-            )).join('');
-        };
-
-        const pane = (key, title, count, rowsHtml) => `
-            <div class="art-pane" data-artpane="${key}"${key === 'shim' ? '' : ' hidden'}>
-                <div class="usn-head">${title} (${count} shown)</div>
-                <div class="usn-list art-list">${rowsHtml}</div>
-            </div>`;
-
-        const tabs = `
-            <div class="art-shell">
-                <div class="art-toolbar">
-                    <input id="pfArtSearch" class="pf-search" type="search" placeholder="Search ShimCache and Amcache…" spellcheck="false" autocomplete="off">
-                    <span class="pf-ref-count" id="pfArtCount"></span>
-                </div>
-                <div class="art-tabs">
-                    <button type="button" class="art-tab on" data-arttab="shim">ShimCache (${shim.length})</button>
-                    <button type="button" class="art-tab" data-arttab="am">Amcache (${am.length})</button>
-                </div>
-                ${pane('shim', 'ShimCache entries', shim.length, shimRows(''))}
-                ${pane('am', 'Amcache entries', am.length, amRows(''))}
-            </div>`;
-        return { html: tabs, shim, am, shimRows, amRows };
-    };
-
-    const hasReferencedFiles = (e) =>
-        (e.referencedFiles && e.referencedFiles.length) || Number(e.referencedFileCount) > 0;
-
-    const referencedFileCount = (e) =>
-        (e.referencedFiles && e.referencedFiles.length) || Number(e.referencedFileCount) || 0;
-
-    const openReferencedModal = (entry, filesOverride) => {
-        const files = (filesOverride && filesOverride.length) ? filesOverride : (entry.referencedFiles || []);
-        const fmtSize = (s) => {
-            if (s == null) return '';
-            const b = Number(s);
-            if (!b) return '';
-            return b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB'
-                : b >= 1024 ? Math.round(b / 1024) + ' KB'
-                : b + ' B';
-        };
-        const rowHtml = (f) => {
-            const meta = [];
-            if (f.fileSize != null) meta.push(fmtSize(f.fileSize));
-            if (f.modified) meta.push(escapeHtml(f.modified));
-            if (f.mftReference) meta.push('MFT 0x' + (Number(f.mftReference) >>> 0).toString(16).toUpperCase());
-            const metaHtml = meta.length ? `<span class="pf-file-meta">${meta.join(' · ')}</span>` : '';
-            return `
-                <div class="pf-file-row ${f.suspicious ? 'susp' : ''}">
-                    <span class="pf-file-path">${escapeHtml(f.path)}</span>${sigBadge(f.signatureStatus)}
-                    ${metaHtml}
-                </div>`;
-        };
-        const rows = (q) => {
-            const query = (q || '').toLowerCase();
-            const filtered = files.filter(f => !query || (f.path || '').toLowerCase().includes(query));
-            if (!filtered.length) return `<div class="scanning-state"><p>No matching referenced files.</p></div>`;
-            return filtered.map(rowHtml).join('');
-        };
-        showPfInfo(`Referenced Files — ${entry.pfFileName}`, '', `
-            <div class="pf-ref-toolbar">
-                <input id="pfRefSearch" class="pf-search" type="text" placeholder="Search referenced files...">
-                <span class="pf-ref-count">${files.length}</span>
-            </div>
-            <div class="usn-list pf-ref-list">${rows('')}</div>
-        `);
-        const input = $('pfRefSearch');
-        if (input) {
-            input.addEventListener('input', () => {
-                const listEl = document.querySelector('.pf-ref-list');
-                if (listEl) listEl.innerHTML = rows(input.value);
-            });
-            input.focus();
-        }
-    };
-
-    // Opens the referenced-files modal, fetching the list on demand when the
-    // scan response was slimmed past the size limit and the entry no longer
-    // carries its referencedFiles array.
-    const openReferencedFiles = async (entry) => {
-        if (entry.referencedFiles && entry.referencedFiles.length) {
-            openReferencedModal(entry);
-            return;
-        }
-        const name = entry.pfFileName || 'Prefetch entry';
-        const modal = $('pf-info-modal');
-        showPfInfo(`Referenced Files — ${name}`, '', `
-            ${loadingState('Loading referenced files…')}`);
-        const stillOpen = () => modal && modal.classList.contains('active');
-        try {
-            const res = await window.pywebview.api.prefetch_refs(name);
-            if (!stillOpen()) return;
-            const files = (res && res.referencedFiles) ? res.referencedFiles : [];
-            if (!files.length) {
-                $('pfInfoBody').innerHTML = `<div class="scanning-state"><p>No referenced files found for this entry.</p></div>`;
-                return;
-            }
-            openReferencedModal(entry, files);
-        } catch (err) {
-            if (!stillOpen()) return;
-            $('pfInfoBody').innerHTML =
-                `<div class="scanning-state"><p>Failed to load referenced files: ${escapeHtml(err.message || err)}</p></div>`;
-        }
-    };
-
-    const openRunsModal = (entry) => {
-        const times = entry.lastExecutionTimes || [];
-        const rows = times.length
-            ? times.map((t, i) => `
-                <div class="usn-row">
-                    <span class="usn-action dir">#${times.length - i}</span>
-                    <span class="usn-name">${escapeHtml(t)}</span>
-                </div>`).join('')
-            : `<div class="scanning-state"><p>No recorded execution times for this entry.</p></div>`;
-        showPfInfo(`Run History — ${entry.pfFileName}`, '', `
-            <div class="pf-ref-toolbar">
-                <span class="pf-ref-count" style="margin:0 auto 0 0;background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.1);color:var(--color-fg);min-width:auto;padding:5px 12px;">Run count: ${entry.runCount}</span>
-            </div>
-            <div class="usn-head">${times.length} recorded execution time${times.length === 1 ? '' : 's'}</div>
-            <div class="usn-list pf-ref-list">${rows}</div>
-        `);
-    };
-
-    const pfTools = {
-        search: $('pfSearch'),
-        filters: $$('#pfFilters .pf-chip'),
-        reload: $('pfReload'),
-        exportBtn: $('pfExport'),
-        usn: $('pfUsn'),
-        sysmain: $('pfSysMain'),
-        usnStatus: $('pfUsnStatus'),
-        artifacts: $('pfArtifacts'),
-        missing: $('pfMissing'),
-        exportArtifacts: $('pfExportArtifacts'),
-        exportStatus: $('pfExportStatus'),
-        infoClose: $('pfInfoCloseBtn')
-    };
-
-    const bindPfToolbar = () => {
-        if (!pfTools.search) return;
-        pfTools.search.addEventListener('input', () => {
-            pfState.search = pfTools.search.value;
-            renderPrefetch();
-        });
-
-        pfTools.filters.forEach(chip => {
-            chip.addEventListener('mouseenter', () => SoundFX.hover());
-            chip.addEventListener('click', (e) => {
-                SoundFX.click();
-                addRipple(chip, e.clientX, e.clientY);
-                const key = chip.dataset.filter;
-                pfState[key] = !pfState[key];
-                chip.classList.toggle('on', pfState[key]);
-                renderPrefetch();
-            });
-        });
-
-        pfTools.reload.addEventListener('mouseenter', () => SoundFX.hover());
-        pfTools.reload.addEventListener('click', async (e) => {
-            SoundFX.tool();
-            addRipple(pfTools.reload, e.clientX, e.clientY);
-            if (pfBusy) return;
-            const container = $('prefetch-results');
-            pfResult = null;
-            setPfBusy(true);
-            container.innerHTML = loadingState(
-                'Reloading Prefetch…',
-                'Signature cache cleared, then a full rescan');
-            try {
-                await window.pywebview.api.prefetch_clear_cache();
-                const result = await window.pywebview.api.prefetch_parser_run();
-                if (!result) throw new Error('No output returned.');
-                const hasAny = (result.entries && result.entries.length)
-                    || (result.recoveredDeleted && result.recoveredDeleted.length)
-                    || (result.ghostEntries && result.ghostEntries.length)
-                    || (result.ghostArtifacts && result.ghostArtifacts.length);
-                if (result.error && result.requiresAdmin) {
-                    pfResult = null;
-                    container.innerHTML = `<div class="scanning-state"><p>${escapeHtml(result.error)}</p></div>`;
-                    return;
-                }
-                if (result.error && !hasAny) {
-                    pfResult = null;
-                    container.innerHTML = `<div class="scanning-state"><p>${escapeHtml(result.error)}</p></div>`;
-                    return;
-                }
-                pfResult = result;
-                renderPrefetch();
-            } catch (err) {
-                container.innerHTML = isCancellation(err)
-                    ? '<div class="scanning-state"><p>Scan stopped.</p></div>'
-                    : `<div class="scanning-state"><p>Reload failed: ${escapeHtml(err.message || err)}</p></div>`;
-            } finally {
-                setPfBusy(false);
-            }
-        });
-
-        pfTools.exportBtn.addEventListener('mouseenter', () => SoundFX.hover());
-        pfTools.exportBtn.addEventListener('click', async (e) => {
-            SoundFX.click();
-            addRipple(pfTools.exportBtn, e.clientX, e.clientY);
-            const seen = new Set();
-            const entries = [];
-            for (const e of [...getFilteredEntries(), ...collectMissingEntries()]) {
-                const key = (e.pfPath || '') + '|' + (e.pfFileName || '') + '|' + (e.mainExecutablePath || '');
-                if (seen.has(key)) continue;
-                seen.add(key);
-                entries.push(e);
-            }
-            if (!entries.length) {
-                pfTools.exportStatus.textContent = 'Nothing to export';
-                return;
-            }
-            pfTools.exportStatus.textContent = 'Exporting...';
-            try {
-                const res = await window.pywebview.api.prefetch_export_csv(entries);
-                pfTools.exportStatus.textContent = res || 'Exported';
-            } catch (err) {
-                pfTools.exportStatus.textContent = 'Export failed';
-            }
-        });
-
-        pfTools.usn.addEventListener('mouseenter', () => SoundFX.hover());
-        pfTools.usn.addEventListener('click', async (e) => {
-            SoundFX.tool();
-            addRipple(pfTools.usn, e.clientX, e.clientY);
-            showPfInfo('USN Journal', '', loadingState('Reading USN Journal…'));
-            try {
-                const payload = await window.pywebview.api.prefetch_usn();
-                const events = Array.isArray(payload) ? payload : (payload && payload.events) || [];
-                $('pfInfoBody').innerHTML = renderUsnModal(payload || []);
-                const input = $('pfUsnSearch');
-                if (input) {
-                    input.addEventListener('input', () => {
-                        const body = $('pfInfoBody');
-                        const listEl = body.querySelector('.pf-ref-list');
-                        if (listEl) listEl.innerHTML = renderUsnRows(input.value, events);
-                    });
-                }
-            } catch (err) {
-                $('pfInfoBody').innerHTML =
-                    `<div class="scanning-state"><p>USN scan failed: ${escapeHtml(err.message || err)}</p></div>`;
-            }
-        });
-
-        pfTools.sysmain.addEventListener('mouseenter', () => SoundFX.hover());
-        pfTools.sysmain.addEventListener('click', async (e) => {
-            SoundFX.tool();
-            addRipple(pfTools.sysmain, e.clientX, e.clientY);
-            showPfInfo('SysMain Info', '', loadingState('Reading SysMain…'));
-            try {
-                const sm = await window.pywebview.api.prefetch_sysmain();
-                $('pfInfoBody').innerHTML = renderSysMainModal(sm || {});
-            } catch (err) {
-                $('pfInfoBody').innerHTML =
-                    `<div class="scanning-state"><p>SysMain query failed: ${escapeHtml(err.message || err)}</p></div>`;
-            }
-        });
-
-        pfTools.usnStatus.addEventListener('mouseenter', () => SoundFX.hover());
-        pfTools.usnStatus.addEventListener('click', async (e) => {
-            SoundFX.tool();
-            addRipple(pfTools.usnStatus, e.clientX, e.clientY);
-            showPfInfo('USN Integrity', '', loadingState('Checking USN Journal…'));
-            try {
-                const u = await window.pywebview.api.prefetch_usn_status();
-                $('pfInfoBody').innerHTML = renderUsnStatusModal(u || {});
-            } catch (err) {
-                $('pfInfoBody').innerHTML =
-                    `<div class="scanning-state"><p>USN integrity check failed: ${escapeHtml(err.message || err)}</p></div>`;
-            }
-        });
-
-        if (pfTools.missing) {
-            pfTools.missing.addEventListener('mouseenter', () => SoundFX.hover());
-            pfTools.missing.addEventListener('click', (e) => {
-                SoundFX.tool();
-                addRipple(pfTools.missing, e.clientX, e.clientY);
-                openMissingModal();
-            });
-        }
-        const missingClose = $('pfMissingCloseBtn');
-        const missingModal = $('pf-missing-modal');
-        missingClose?.addEventListener('mouseenter', () => SoundFX.hover());
-        missingClose?.addEventListener('click', (e) => {
-            SoundFX.close();
-            addRipple(missingClose, e.clientX, e.clientY);
-            closeMissingModal();
-        });
-        missingModal?.addEventListener('click', (e) => {
-            if (e.target === missingModal) closeMissingModal();
-            const card = e.target.closest('.pf-compact');
-            if (!card || !missingModal.contains(card)) return;
-            const entry = pfMissingDisplayed[Number(card.dataset.missidx)];
-            if (!entry) return;
-            SoundFX.tool();
-            const refBtn = hasReferencedFiles(entry)
-                ? `<button type="button" class="pf-ref-btn" data-missref="${Number(card.dataset.missidx)}">Referenced files (${referencedFileCount(entry)})</button>`
-                : '';
-            showPfInfo(entry.pfFileName || 'Missing evidence', '', `
-                <div class="pf-kv">
-                    <div class="kv-row"><span class="kv-key">Path</span><span class="kv-val">${escapeHtml(entry.mainExecutablePath || entry.lastSeenPath || entry.pfPath || '')}</span></div>
-                    ${entry.lastSeenPath && entry.lastSeenPath !== entry.mainExecutablePath ? `<div class="kv-row"><span class="kv-key">Last seen</span><span class="kv-val">${escapeHtml(entry.lastSeenPath)}</span></div>` : ''}
-                    ${entry.lastSeenSource || entry.lastSeenTime ? `<div class="kv-row"><span class="kv-key">Evidence</span><span class="kv-val">${escapeHtml([entry.lastSeenSource, entry.lastSeenTime].filter(Boolean).join(' · '))}</span></div>` : ''}
-                    ${entry.signatureDetail ? `<div class="kv-row"><span class="kv-key">Why</span><span class="kv-val">${escapeHtml(entry.signatureDetail)}</span></div>` : ''}
-                    ${entry.riskSummary ? `<div class="kv-row"><span class="kv-key">Risk</span><span class="kv-val">${escapeHtml(entry.riskSummary)}</span></div>` : ''}
-                    ${entry.sha256 ? `<div class="kv-row"><span class="kv-key">SHA-256</span><span class="kv-val">${escapeHtml(entry.sha256)}</span></div>` : ''}
-                </div>
-                <div class="pf-meta" style="border:0;margin-top:10px;padding-top:0">${presenceBadge(entry, false)}${sigBadge(entry.mainSignatureStatus)}</div>
-                ${refBtn}
-            `);
-        });
-        missingModal?.addEventListener('keydown', (e) => {
-            if (e.key !== 'Tab' || !missingModal.classList.contains('active')) return;
-            const nodes = [...missingModal.querySelectorAll(
-                'button:not([disabled]), input:not([disabled]), [href], select, textarea, [tabindex]:not([tabindex="-1"])'
-            )].filter(el => el.offsetParent !== null || el === document.activeElement);
-            if (!nodes.length) return;
-            const first = nodes[0];
-            const last = nodes[nodes.length - 1];
-            if (e.shiftKey && document.activeElement === first) {
-                e.preventDefault();
-                last.focus();
-            } else if (!e.shiftKey && document.activeElement === last) {
-                e.preventDefault();
-                first.focus();
-            }
-        });
-        $('pfMissingSearch')?.addEventListener('input', (e) => {
-            pfMissingSearch = e.target.value || '';
-            renderMissingPopupList();
-        });
-        $$('#pfMissingFilters .pf-chip').forEach(chip => {
-            chip.addEventListener('mouseenter', () => SoundFX.hover());
-            chip.addEventListener('click', (ev) => {
-                SoundFX.click();
-                addRipple(chip, ev.clientX, ev.clientY);
-                pfMissingKind = chip.dataset.miss || 'all';
-                $$('#pfMissingFilters .pf-chip').forEach(c =>
-                    c.classList.toggle('on', c === chip));
-                renderMissingPopupList();
-            });
-        });
-
-        pfTools.artifacts.addEventListener('mouseenter', () => SoundFX.hover());
-        pfTools.artifacts.addEventListener('click', async (e) => {
-            SoundFX.tool();
-            addRipple(pfTools.artifacts, e.clientX, e.clientY);
-            showPfInfo('Artifacts', '', loadingState('Reading ShimCache and Amcache…'));
-            try {
-                const data = await window.pywebview.api.prefetch_artifacts();
-                const art = renderArtifactsModal(data || {});
-                $('pfInfoBody').innerHTML = art.html;
-                const body = $('pfInfoBody');
-
-                const reapply = () => {
-                    const q = ($('pfArtSearch')?.value || '').trim();
-                    const ql = q.toLowerCase();
-                    const onTab = body.querySelector('.art-tab.on')?.dataset.arttab || 'shim';
-                    const shimShown = art.shim.filter(e => !ql || (e.path || '').toLowerCase().includes(ql));
-                    const amShown = art.am.filter(e => !ql ||
-                        (e.name || '').toLowerCase().includes(ql) ||
-                        (e.path || '').toLowerCase().includes(ql) ||
-                        (e.publisher || '').toLowerCase().includes(ql));
-                    body.querySelector('[data-artpane="shim"] .usn-list').innerHTML = art.shimRows(q);
-                    body.querySelector('[data-artpane="shim"] .usn-head').textContent = `ShimCache entries (${shimShown.length} shown)`;
-                    body.querySelector('[data-artpane="am"] .usn-list').innerHTML = art.amRows(q);
-                    body.querySelector('[data-artpane="am"] .usn-head').textContent = `Amcache entries (${amShown.length} shown)`;
-                    const shown = onTab === 'am' ? amShown.length : shimShown.length;
-                    const tabTotal = onTab === 'am' ? art.am.length : art.shim.length;
-                    const countEl = $('pfArtCount');
-                    if (countEl) countEl.textContent = `${shown} / ${tabTotal}`;
-                };
-
-                const search = $('pfArtSearch');
-                if (search) {
-                    search.addEventListener('mouseenter', () => SoundFX.hover());
-                    search.addEventListener('input', reapply);
-                }
-                reapply();
-
-                body.querySelectorAll('.art-tab').forEach(tab => {
-                    tab.addEventListener('mouseenter', () => SoundFX.hover());
-                    tab.addEventListener('click', () => {
-                        SoundFX.click();
-                        body.querySelectorAll('.art-tab').forEach(t => t.classList.toggle('on', t === tab));
-                        body.querySelectorAll('.art-pane').forEach(p => {
-                            p.hidden = p.dataset.artpane !== tab.dataset.arttab;
-                        });
-                        reapply();
-                    });
-                });
-            } catch (err) {
-                $('pfInfoBody').innerHTML =
-                    `<div class="scanning-state"><p>Artifacts scan failed: ${escapeHtml(err.message || err)}</p></div>`;
-            }
-        });
-
-        pfTools.exportArtifacts.addEventListener('mouseenter', () => SoundFX.hover());
-        pfTools.exportArtifacts.addEventListener('click', async (e) => {
-            SoundFX.click();
-            addRipple(pfTools.exportArtifacts, e.clientX, e.clientY);
-            pfTools.exportStatus.textContent = 'Exporting...';
-            try {
-                const res = await window.pywebview.api.prefetch_export_artifacts();
-                pfTools.exportStatus.textContent = res || 'Exported';
-            } catch (err) {
-                pfTools.exportStatus.textContent = 'Export failed';
-            }
-        });
-
-        pfTools.infoClose.addEventListener('mouseenter', () => SoundFX.hover());
-        pfTools.infoClose.addEventListener('click', (e) => {
-            SoundFX.close();
-            addRipple(pfTools.infoClose, e.clientX, e.clientY);
-            closePfInfo();
-        });
-        $('pf-info-modal').addEventListener('click', (e) => {
-            const missRef = e.target.closest('.pf-ref-btn[data-missref]');
-            if (missRef) {
-                SoundFX.tool();
-                const entry = pfMissingDisplayed[Number(missRef.dataset.missref)];
-                if (entry) openReferencedFiles(entry);
-                return;
-            }
-            if (e.target === $('pf-info-modal')) {
-                SoundFX.modalClose();
-                closePfInfo();
-            }
-        });
-    };
-
-    /* ================================================================ *
-     *  BAM PARSER
-     * ================================================================ */
-    let bamResult = null;
-    let bamBusy = false;
-    let bamState = { search: '', untrusted: false, postlogon: false, yara: false };
-    let bamDisplayed = [];
-
-    const setBamBusy = (busy) => {
-        bamBusy = busy;
-        if (ui.bamRescanBtn) {
-            ui.bamRescanBtn.disabled = busy;
-            ui.bamRescanBtn.hidden = busy;
-        }
-        const ready = !busy && !!bamResult && !bamResult.requiresAdmin;
-        if (ui.bamToolbar) ui.bamToolbar.hidden = !ready;
-    };
-
-    const bamSigLabel = (s) => ({ 0: 'Signed', 1: 'Unsigned', 2: 'Not Found', 3: 'Cheat', 4: 'Fake' })[Number(s)] || 'Unknown';
-    const bamSigClass = (s) => ({ 0: 'signed', 1: 'unsigned', 2: 'missing', 3: 'cheat', 4: 'fake' })[Number(s)] || 'warn';
-
-    const renderBamSummary = (r) => {
-        const findings = (r.cheatSig || 0) + (r.yaraMatch || 0) + (r.fakeSig || 0) + (r.unsigned || 0);
-        const banners = [];
-        if (r.requiresAdmin) {
-            banners.push(pfBanner(
-                'Limited scan',
-                'BAM values are readable, but signature verification, deleted BAM recovery and registry ACL checks need Administrator.'
-            ));
-        }
-        if (r.deletedReadFailed) {
-            banners.push(pfBanner('Deleted BAM read failed', escapeHtml(r.deletedReadError || 'Unknown error'), 'info'));
-        }
-        if (r.deletedCount > 0) {
-            banners.push(pfBanner(
-                `${r.deletedCount} deleted BAM ${r.deletedCount === 1 ? 'path' : 'paths'} recovered`,
-                'Found in the raw SYSTEM hive — programs that executed but whose BAM value was later deleted.',
-                'info'
-            ));
-        }
-        if (r.deniedCount > 0) {
-            banners.push(pfBanner(
-                `${r.deniedCount} denied registry ${r.deniedCount === 1 ? 'entry' : 'entries'}`,
-                'The bam subtree carries deny ACEs — usually a hardening/anti-cheat fingerprint.'
-            ));
-        }
-        if (r.yaraMatch > 0) {
-            banners.push(pfBanner(
-                `${r.yaraMatch} YARA match${r.yaraMatch === 1 ? '' : 'es'}`,
-                'Unsigned executed files that hit cheat rules are shown as Cheat.'
-            ));
-        }
-
-        return `
-            <div class="svc-summary">
-                <div class="svc-stat">
-                    <span class="svc-stat-value">${r.total || 0}</span>
-                    <span class="svc-stat-label">BAM entries</span>
-                </div>
-                <div class="svc-stat ${findings ? 'bad' : 'ok'}">
-                    <span class="svc-stat-value">${findings}</span>
-                    <span class="svc-stat-label">Findings</span>
-                </div>
-                <div class="svc-stat ${(r.cheatSig || 0) + (r.yaraMatch || 0) ? 'bad' : ''}">
-                    <span class="svc-stat-value">${(r.cheatSig || 0) + (r.yaraMatch || 0)}</span>
-                    <span class="svc-stat-label">Cheat</span>
-                </div>
-                <div class="svc-stat ${r.deletedCount ? 'warn' : ''}">
-                    <span class="svc-stat-value">${r.deletedCount || 0}</span>
-                    <span class="svc-stat-label">Deleted</span>
-                </div>
-                <div class="svc-stat ${r.deniedCount ? 'warn' : ''}">
-                    <span class="svc-stat-value">${r.deniedCount || 0}</span>
-                    <span class="svc-stat-label">Denied keys</span>
-                </div>
-                ${r.scanSeconds ? `<div class="svc-stat"><span class="svc-stat-value">${r.scanSeconds}<small>s</small></span><span class="svc-stat-label">Scan time</span></div>` : ''}
-            </div>
-            ${banners.join('')}`;
-    };
-
-    const renderBamEntry = (e, idx) => {
-        const tone = e.signature === 3 || e.signature === 4 ? 'cheat'
-            : e.signature === 1 ? 'unsigned' : '';
-        return `
-            <article class="pf-entry ${tone} anim-in" style="animation-delay:${Math.min(24 * idx, 280)}ms">
-                <button type="button" class="pf-entry-toggle" aria-expanded="false">
-                    <span class="svc-dot ${e.signature === 3 || e.signature === 4 || (e.matchedRules && e.matchedRules.length) ? 'bad' : e.signature === 1 ? 'warn' : 'ok'}"></span>
-                    <div class="pf-entry-title">
-                        <span class="pf-name">${escapeHtml(e.path.split('\\').pop() || e.path)}</span>
-                        <span class="pf-entry-path">${escapeHtml(e.path)}</span>
-                    </div>
-                    ${e.fileExists ? '' : '<span class="pf-badge missing">Missing file</span>'}
-                    <span class="pf-badge ${bamSigClass(e.signature)}">${bamSigLabel(e.signature)}</span>
-                </button>
-                <div class="pf-entry-body">
-                    <div class="pf-row"><span class="pf-key">Path</span><span class="pf-val">${escapeHtml(e.path)}</span></div>
-                    ${e.lastExecution ? `<div class="pf-row"><span class="pf-key">Last execution</span><span class="pf-val">${escapeHtml(e.lastExecution)}${e.inLogonWindow ? ' <span class="pf-chip ok">Post-logon</span>' : ''}</span></div>` : ''}
-                    ${e.signatureDetail ? `<div class="pf-row pf-detail-row"><span class="pf-key">Why</span><span class="pf-val">${escapeHtml(e.signatureDetail)}</span></div>` : ''}
-                    ${renderYaraTags(e.matchedRules)}
-                    ${e.isSystemEntry ? '<div class="pf-row"><span class="pf-key">Note</span><span class="pf-val">Windows/system-owned path</span></div>' : ''}
-                </div>
-            </article>`;
-    };
-
-    const renderBamDeleted = (r) => {
-        if (!r.deletedPaths || !r.deletedPaths.length) return '';
-        return `
-            <section class="service-section">
-                <div class="service-section-header">
-                    <span class="service-section-icon">${SVC_ICONS.recycle}</span>
-                    <h3>Deleted BAM paths</h3>
-                    <span class="svc-section-meta">${r.deletedPaths.length} recovered</span>
-                </div>
-                <div class="service-section-body">
-                    <p class="svc-empty">Programs that executed but whose BAM value was later deleted.</p>
-                    <button type="button" class="pf-ref-btn" id="bamDeletedOpen" data-bam-deleted="open">View deleted paths (${r.deletedPaths.length})</button>
-                </div>
-            </section>`;
-    };
-
-    const renderDeletedBamRows = (q, paths) => {
-        const query = (q || '').toLowerCase().trim();
-        const list = (paths || []).filter(p =>
-            !query || (p.path || '').toLowerCase().includes(query));
-        if (!list.length) return '<p class="svc-empty">No deleted paths match the search.</p>';
-        return `<div class="alt-list">${list.map(p => `
-            <div class="alt-row">
-                <span class="svc-dot warn"></span>
-                <div class="alt-row-copy">
-                    <span class="alt-row-val">${escapeHtml(p.path)}</span>
-                </div>
-            </div>`).join('')}</div>`;
-    };
-
-    const openDeletedBamModal = () => {
-        if (!bamResult || !bamResult.deletedPaths || !bamResult.deletedPaths.length) return;
-        const paths = bamResult.deletedPaths;
-        showPfInfo('Deleted BAM paths', '', `
-            <div class="pf-missing-toolbar">
-                <input id="bamDeletedSearch" class="pf-missing-search" type="search" placeholder="Search deleted paths…" spellcheck="false" autocomplete="off">
-            </div>
-            <div class="pf-ref-list" id="bamDeletedList">${renderDeletedBamRows('', paths)}</div>`);
-        const input = $('bamDeletedSearch');
-        if (input) {
-            input.focus();
-            input.addEventListener('input', () => {
-                $('bamDeletedList').innerHTML = renderDeletedBamRows(input.value, paths);
-            });
-        }
-    };
-
-    const renderBamDenied = (r) => {
-        if (!r.deniedEntries || !r.deniedEntries.length) return '';
-        return `
-            <section class="service-section">
-                <div class="service-section-header">
-                    <span class="service-section-icon">${ICON.lock}</span>
-                    <h3>Denied registry keys</h3>
-                    <span class="svc-section-meta">${r.deniedEntries.length} entries</span>
-                </div>
-                <div class="service-section-body">
-                    <div class="alt-list">${r.deniedEntries.map(d => `
-                        <div class="alt-row">
-                            <span class="svc-dot warn"></span>
-                            <div class="alt-row-copy">
-                                <span class="alt-row-val">${escapeHtml(d.keyPath)}</span>
-                                <span class="alt-row-sub">Denied: ${escapeHtml(d.permission)}</span>
-                            </div>
-                        </div>`).join('')}</div>
-                </div>
-            </section>`;
-    };
-
-    const applyBamFilters = () => {
-        const q = bamState.search.trim().toLowerCase();
-        const src = bamResult.entries || [];
-        bamDisplayed = src.filter(e => {
-            if (bamState.untrusted && ![1, 3, 4].includes(Number(e.signature))) return false;
-            if (bamState.postlogon && !e.inLogonWindow) return false;
-            if (bamState.yara && !(e.matchedRules && e.matchedRules.length)) return false;
-            if (q) {
-                const hay = ((e.path || '') + ' ' + (e.signatureDetail || '') + ' ' + (e.matchedRules || []).join(' ')).toLowerCase();
-                if (!hay.includes(q)) return false;
-            }
-            return true;
-        });
-    };
-
-    const renderBam = () => {
-        const container = $('bam-results');
-        if (!bamResult) return;
-        applyBamFilters();
-        const list = bamDisplayed.map(renderBamEntry).join('');
-        container.innerHTML = renderBamSummary(bamResult)
-            // Deleted BAM first — the most actionable finding of the scan.
-            + renderBamDeleted(bamResult)
-            + `<section class="service-section">
-                <div class="service-section-header">
-                    <span class="service-section-icon">${SVC_ICONS.services}</span>
-                    <h3>BAM entries</h3>
-                    <span class="svc-section-meta">${bamDisplayed.length} / ${bamResult.entries.length} shown</span>
-                </div>
-                <div class="service-section-body pf-list">${list || '<p class="svc-empty">No BAM entries match the filters.</p>'}</div>
-            </section>`
-            + renderBamDenied(bamResult);
-        revealSections(container);
-        // Cards start hidden (opacity 0) for the reveal animation; stagger them
-        // like the Prefetch screen does.
-        container.querySelectorAll('.pf-entry').forEach((el, i) => {
-            setTimeout(() => el.classList.add('revealed'), Math.min(24 * i, 280));
-        });
-    };
-
-    const openBamParser = async (force = false) => {
-        showScreen('bam-screen');
-        if (bamBusy) return;
-        if (!force && bamResult) {
-            renderBam();
-            return;
-        }
-
-        const container = $('bam-results');
-        setBamBusy(true);
-        bamResult = null;
-        container.innerHTML = loadingState(
-            'Parsing BAM entries…',
-            'Registry traces, signatures, YARA, deleted SYSTEM-hive recovery and registry ACLs');
-
-        try {
-            const result = await window.pywebview.api.bam_parser_run();
-            if (!result) throw new Error('No output returned.');
-            bamResult = result;
-            renderBam();
-        } catch (err) {
-            container.innerHTML = isCancellation(err)
-                ? '<div class="scanning-state"><p>Scan stopped.</p></div>'
-                : `<div class="scanning-state"><p>Error running scan: ${escapeHtml(err.message || err)}</p></div>`;
-        } finally {
-            setBamBusy(false);
-        }
-    };
-
-    const bindBamToolbar = () => {
-        const search = $('bamSearch');
-        if (!search) return;
-        search.addEventListener('input', () => {
-            bamState.search = search.value;
-            renderBam();
-        });
-        $$('#bamFilters .pf-chip').forEach(chip => {
-            chip.addEventListener('mouseenter', () => SoundFX.hover());
-            chip.addEventListener('click', (e) => {
-                SoundFX.click();
-                addRipple(chip, e.clientX, e.clientY);
-                bamState[chip.dataset.filter] = !bamState[chip.dataset.filter];
-                chip.classList.toggle('on', bamState[chip.dataset.filter]);
-                renderBam();
-            });
-        });
-        bindOnce(ui.bamRescanBtn, () => openBamParser(true), 'tool');
-        ui.bamBackBtn?.addEventListener('mouseenter', () => SoundFX.hover());
-        ui.bamBackBtn?.addEventListener('click', (e) => {
-            SoundFX.close();
-            addRipple(ui.bamBackBtn, e.clientX, e.clientY);
-            stopCurrentScan();
-            showScreen('main-screen');
-        });
-        const results = $('bam-results');
-        results?.addEventListener('click', (e) => {
-            const deletedBtn = e.target.closest('[data-bam-deleted]');
-            if (deletedBtn) {
-                SoundFX.tool();
-                addRipple(deletedBtn, e.clientX, e.clientY);
-                openDeletedBamModal();
-                return;
-            }
-            const toggle = e.target.closest('.pf-entry-toggle');
-            if (!toggle || !results.contains(toggle)) return;
-            SoundFX.click();
-            const entry = toggle.closest('.pf-entry');
-            const open = entry.classList.toggle('is-open');
-            toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-        });
-    };
-
-    /* ================================================================ *
-     *  ALT CHECKER
-     * ================================================================ */
     let altResult = null;
     let altBusy = false;
 
@@ -2276,9 +818,30 @@
             flashCopied(btn, 'Nothing to copy');
             return;
         }
-        navigator.clipboard?.writeText(lines.join('\n')).then(() => {
-            flashCopied(btn, `Copied ${lines.length} ${label}`);
-        }).catch(() => flashCopied(btn, 'Copy failed'));
+        const text = lines.join('\n');
+        const done = (ok) => flashCopied(btn, ok ? `Copied ${lines.length} ${label}` : 'Copy failed');
+        if (navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(text).then(() => done(true), () => fallbackCopy(text, done));
+        } else {
+            fallbackCopy(text, done);
+        }
+    };
+
+    const fallbackCopy = (text, done) => {
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            const ok = document.execCommand('copy');
+            ta.remove();
+            done(!!ok);
+        } catch (e) {
+            done(false);
+        }
     };
 
     const exportAltResult = () => {
@@ -2295,11 +858,14 @@
             browserDirectoriesScanned: altResult.browserDirectoriesScanned || 0
         };
         const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
+        a.href = url;
         a.download = `AltDetection_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+        document.body.appendChild(a);
         a.click();
-        URL.revokeObjectURL(a.href);
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
     };
 
     const openAltDetector = async (force = false) => {
@@ -2410,9 +976,633 @@
         }
     };
 
-    /* ================================================================ *
-     *  Wire-up
-     * ================================================================ */
+    let pfResult = null;
+    let pfBusy = false;
+    let pfSelected = -1;
+    let pfTab = 'related';
+    let pfSigToken = 0;
+    let pfSort = { key: 'time', dir: -1 };
+    const pfFilters = { unsigned: false, flagged: false, instance: false, q: '' };
+
+    const PF_ICONS = {
+        shieldOk: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l8 3v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V5z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg>',
+        alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3L22 20H2L12 3z"/><path d="M12 9v5"/><path d="M12 17h.01"/></svg>',
+        doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
+        layers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>',
+        zap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+        clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+        search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>'
+    };
+
+    const pfEntryLevel = (e) => pfRuleFlagged(e) ? 'bad' : (!e.isSigned ? 'warn' : 'ok');
+
+    const pfRelTime = (unix) => {
+        if (!unix) return '—';
+        const s = Math.floor(Date.now() / 1000) - unix;
+        if (s < 0) return '—';
+        if (s < 60) return 'just now';
+        if (s < 3600) {
+            const m = Math.floor(s / 60);
+            return `${m}m ago`;
+        }
+        if (s < 86400) {
+            const h = Math.floor(s / 3600);
+            return `${h}h ago`;
+        }
+        const d = Math.floor(s / 86400);
+        if (d === 1) return 'yesterday';
+        if (d < 30) return `${d}d ago`;
+        const mo = Math.floor(d / 30);
+        if (mo === 1) return '1mo ago';
+        if (mo < 12) return `${mo}mo ago`;
+        return `${Math.floor(mo / 12)}y ago`;
+    };
+
+    const pfWeekday = (unix) => {
+        if (!unix) return '';
+        return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(unix * 1000).getDay()];
+    };
+
+    const pfHex = (n) => '0x' + Number(n || 0).toString(16).toUpperCase();
+
+    const pfHitTitle = (h) => {
+        const bits = [];
+        if (h.sample) bits.push(`"${h.sample}"`);
+        bits.push(`@ ${pfHex(h.offset)}`);
+        if (h.encoding) bits.push(`(${h.encoding})`);
+        if (h.count > 1) bits.push(`×${h.count}`);
+        return bits.join(' ');
+    };
+
+    const pfCountUp = (container) => {
+        const reduced = document.documentElement.classList.contains('perf-reduced-motion');
+        container.querySelectorAll('.pf-num').forEach(el => {
+            const target = Number(el.dataset.n) || 0;
+            if (reduced || target <= 0) {
+                el.textContent = String(target);
+                return;
+            }
+            const t0 = performance.now();
+            const dur = 750;
+            const step = (t) => {
+                const p = Math.min(1, (t - t0) / dur);
+                el.textContent = String(Math.round(target * (1 - Math.pow(1 - p, 3))));
+                if (p < 1) requestAnimationFrame(step);
+            };
+            requestAnimationFrame(step);
+        });
+    };
+
+    const setPfBusy = (busy) => {
+        pfBusy = busy;
+        if (ui.pfRescanBtn) {
+            ui.pfRescanBtn.disabled = busy;
+            ui.pfRescanBtn.hidden = busy;
+        }
+        if (ui.pfExportBtn) {
+            const ready = !busy && !!pfResult;
+            ui.pfExportBtn.disabled = !ready;
+            ui.pfExportBtn.hidden = !ready;
+        }
+    };
+
+    const pfRuleFlagged = (e) => (e.matchedRules || []).some(r => r && r !== 'none');
+
+    const pfVisibleEntries = () => {
+        const list = Array.isArray(pfResult?.entries) ? pfResult.entries : [];
+        const q = (pfFilters.q || '').trim().toLowerCase();
+        const out = [];
+        list.forEach((e, i) => {
+            if (pfFilters.unsigned && e.isSigned) return;
+            if (pfFilters.flagged && !pfRuleFlagged(e)) return;
+            if (pfFilters.instance && !e.isInInstance) return;
+            if (q) {
+                const hay = [
+                    e.properPath || '', e.filename || '', e.readableTime || '',
+                    ((e.matchedDetails || []).map(h => `${h.name || ''} ${h.id || ''} ${h.sample || ''}`).join(' '))
+                ].join(' ').toLowerCase();
+                if (!hay.includes(q)) return;
+            }
+            out.push({ e, i });
+        });
+        const dir = pfSort.dir;
+        const byTime = (a, b) => (a.e.executedUnix || 0) - (b.e.executedUnix || 0);
+        const byPath = (a, b) => String(a.e.properPath || a.e.filename || '').localeCompare(
+            String(b.e.properPath || b.e.filename || ''));
+        const bySigned = (a, b) => (a.e.isSigned === b.e.isSigned) ? 0 : (a.e.isSigned ? 1 : -1);
+        const byPresent = (a, b) => (a.e.isPresent === b.e.isPresent) ? 0 : (a.e.isPresent ? 1 : -1);
+        const byRules = (a, b) => String((a.e.matchedRules || []).join(',')).localeCompare(
+            String((b.e.matchedRules || []).join(',')));
+        const cmp = pfSort.key === 'path' ? byPath
+            : pfSort.key === 'signed' ? bySigned
+            : pfSort.key === 'present' ? byPresent
+            : pfSort.key === 'rules' ? byRules : byTime;
+        out.sort((a, b) => cmp(a, b) * dir);
+        return out;
+    };
+
+    const paintPfTable = () => {
+        const wrap = $('pfTableWrap');
+        if (!wrap) return;
+        wrap.innerHTML = renderPfTable();
+        const meta = wrap.closest('.service-section')?.querySelector('.svc-section-meta');
+        if (meta) {
+            const n = pfVisibleEntries().length;
+            meta.textContent = `${n} shown`;
+        }
+    };
+
+    const renderPfTable = () => {
+        const rows = pfVisibleEntries();
+        if (!rows.length) {
+            return '<p class="svc-empty">No prefetch entries match the current search and filters.</p>';
+        }
+        const arrow = (key) => pfSort.key === key
+            ? `<span class="pf-arrow">${pfSort.dir === 1 ? '▲' : '▼'}</span>` : '';
+        const th = (key, label, hideMd) => `
+            <button type="button" class="pf-sort ${pfSort.key === key ? 'sorted' : ''} ${hideMd ? 'pf-hide-md' : ''}" data-pf-sort="${key}">
+                ${escapeHtml(label)} ${arrow(key)}
+            </button>`;
+        const body = rows.map(({ e, i }, pos) => {
+            const lvl = pfEntryLevel(e);
+            const hits = Array.isArray(e.matchedDetails) && e.matchedDetails.length
+                ? e.matchedDetails
+                : (e.matchedRules || []).filter(r => r && r !== 'none')
+                    .map(r => ({ id: r, name: r, sample: '' }));
+            const rulesHtml = hits.length
+                ? `<div class="pf-rules-cell">${hits.map(h => `<span class="pf-rule" title="${escapeHtml(pfHitTitle(h))}">${escapeHtml(h.name || h.id)}${h.count > 1 ? ` <b>×${h.count}</b>` : ''}</span>`).join('')}</div>`
+                : '<span class="pf-rule-none">—</span>';
+            const subFile = escapeHtml(e.filename || '');
+            const sub = e.isInInstance ? `${subFile} <span class="in-inst">· in instance</span>` : subFile;
+            return `
+            <div class="pf-row lvl-${lvl}" data-pf-row="${i}" role="button" tabindex="0" title="Open details" style="--d:${Math.min(pos, 60) * 16}ms">
+                <span class="pf-main">
+                    <span class="pf-fileicon lvl-${lvl}">${PF_ICONS.doc}</span>
+                    <span class="pf-row-main">
+                        <span class="pf-path" title="${escapeHtml(e.properPath || e.filename || '')}">${escapeHtml(e.properPath || e.filename || '—')}</span>
+                        <span class="pf-sub">${sub}</span>
+                    </span>
+                </span>
+                <span class="pf-timecol" title="${escapeHtml(e.readableTime || '')}">
+                    <b>${escapeHtml(pfRelTime(e.executedUnix))}</b>
+                    <span>${escapeHtml((e.readableTime || '').slice(0, 16) || '—')}</span>
+                </span>
+                <span><span class="pf-flag ${e.isSigned ? 'ok' : 'bad'}">${escapeHtml(e.isSigned ? 'Signed' : 'Unsigned')}</span></span>
+                <span class="pf-hide-md"><span class="pf-present ${e.isPresent ? '' : 'no'}"><span class="svc-dot ${e.isPresent ? 'ok' : 'warn'}"></span>${escapeHtml(e.isPresent ? 'Yes' : 'No')}</span></span>
+                <span>${rulesHtml}</span>
+            </div>`;
+        }).join('');
+        return `
+        <div class="pf-table" role="table" aria-label="Prefetch entries">
+            <div class="pf-head" role="row">
+                ${th('path', 'Binary', false)}
+                ${th('time', 'Last exec', false)}
+                ${th('signed', 'Signature', false)}
+                ${th('present', 'Present', true)}
+                ${th('rules', 'Generics', false)}
+            </div>
+            ${body}
+        </div>`;
+    };
+
+    const pfModalOpen = () => ui.pfModal?.classList.contains('active');
+
+    const openPfModal = (idx) => {
+        const list = Array.isArray(pfResult?.entries) ? pfResult.entries : [];
+        if (!Number.isInteger(idx) || idx < 0 || idx >= list.length) return;
+        pfSelected = idx;
+        pfTab = 'related';
+        paintPfModal();
+        ui.pfModal?.classList.add('active');
+        SoundFX.modalOpen();
+        ui.pfModalBody?.scrollTo?.(0, 0);
+    };
+
+    const closePfModal = () => {
+        if (!pfModalOpen()) return;
+        ui.pfModal.classList.remove('active');
+        SoundFX.modalClose();
+    };
+
+    const paintPfModal = () => {
+        const list = Array.isArray(pfResult?.entries) ? pfResult.entries : [];
+        if (pfSelected < 0 || pfSelected >= list.length) return;
+        const e = list[pfSelected];
+        const lvl = pfEntryLevel(e);
+
+        const title = $('pfModalTitle');
+        if (title) title.textContent = e.filename || 'Entry details';
+        if (ui.pfModalIcon) {
+            ui.pfModalIcon.className = `pf-modal-icon lvl-${lvl}`;
+            ui.pfModalIcon.innerHTML = lvl === 'ok' ? PF_ICONS.shieldOk : PF_ICONS.alert;
+        }
+        if (ui.pfModalSub) {
+            const verdict = lvl === 'bad' ? 'Flagged' : lvl === 'warn' ? 'Unsigned' : 'Signed';
+            ui.pfModalSub.textContent = [e.properPath || '', e.readableTime || '', verdict]
+                .filter(Boolean).join('  ·  ');
+        }
+        if (ui.pfModalTabs) {
+            ui.pfModalTabs.innerHTML = [
+                ['related', 'Related Files'],
+                ['rules', 'Rules'],
+                ['history', 'Execution History'],
+                ['file', 'PF File Info']
+            ].map(([key, label]) => `
+                <button type="button" class="pf-tab ${pfTab === key ? 'active' : ''}" data-pf-tab="${key}" role="tab">${escapeHtml(label)}</button>
+            `).join('');
+        }
+        if (ui.pfModalBody) {
+            ui.pfModalBody.innerHTML = pfModalBodyHtml(e);
+            ui.pfModalBody.scrollTop = 0;
+        }
+        if (pfTab === 'related') requestPfSigs();
+    };
+
+    const requestPfSigs = () => {
+        const list = Array.isArray(pfResult?.entries) ? pfResult.entries : [];
+        if (pfSelected < 0 || pfSelected >= list.length || !ui.pfModalBody) return;
+        const files = (list[pfSelected].relatedFiles || [])
+            .filter(f => f && f.present && f.path)
+            .map(f => f.path);
+        if (!files.length) return;
+        const token = ++pfSigToken;
+        const paths = files.slice(0, 200);
+        const apply = (map) => {
+            if (token !== pfSigToken || !pfModalOpen() || !ui.pfModalBody) return;
+            ui.pfModalBody.querySelectorAll('[data-pf-sig]').forEach(el => {
+                const key = (el.getAttribute('data-pf-sig') || '').toLowerCase();
+                if (key && Object.prototype.hasOwnProperty.call(map, key)) {
+                    const ok = map[key];
+                    el.className = 'pf-sig ' + (ok ? 'ok' : 'bad');
+                    el.textContent = ok ? 'Signed' : 'Unsigned';
+                } else {
+                    el.className = 'pf-sig muted';
+                    el.textContent = '—';
+                }
+            });
+        };
+        try {
+            window.pywebview.api.prefetch_related_signatures(paths).then(
+                (res) => {
+                    const map = {};
+                    (res || []).forEach(r => {
+                        if (r && r.path) map[String(r.path).toLowerCase()] = !!r.signed;
+                    });
+                    apply(map);
+                },
+                () => apply({}));
+        } catch (err) {
+            apply({});
+        }
+    };
+
+    const pfModalBodyHtml = (e) => {
+        let detail = '';
+        if (pfTab === 'related') {
+            const files = Array.isArray(e.relatedFiles) ? e.relatedFiles : [];
+            detail = files.length
+                ? `<div class="pf-related-bar">
+                       <button type="button" class="pf-btn alt-copy-btn" data-pf-copy="related">Copy all</button>
+                       <span class="pf-related-note">${files.length} file${files.length === 1 ? '' : 's'}${(e.relatedTotal ?? files.length) > files.length ? ` of ${e.relatedTotal}` : ''} · signatures load on demand${files.length >= 200 ? ' (first 200)' : ''}</span>
+                   </div>
+                   <input type="search" class="alt-filter" data-pf-filter placeholder="Filter…" spellcheck="false" autocomplete="off">
+                   <div class="alt-list">${files.map(f => `
+                    <div class="alt-row">
+                        <span class="svc-dot ${f.present ? 'ok' : 'bad'}"></span>
+                        <div class="alt-row-copy">
+                            <span class="alt-row-val">${escapeHtml(f.path)}</span>
+                            <span class="alt-row-sub">${escapeHtml(f.present ? 'Present' : 'Missing')}</span>
+                        </div>
+                        ${f.present ? `<span class="pf-sig" data-pf-sig="${escapeHtml(f.path)}">…</span>` : '<span class="pf-sig muted">—</span>'}
+                    </div>`).join('')}</div>`
+                : '<p class="svc-empty">No related files recorded.</p>';
+        } else if (pfTab === 'rules') {
+            const hits = Array.isArray(e.matchedDetails) ? e.matchedDetails : [];
+            detail = hits.length
+                ? hits.map(h => `
+                    <div class="pf-rule-card">
+                        <div class="pf-rule-head">
+                            <span class="pf-rule-name">${escapeHtml(h.name || h.id)}</span>
+                            <span class="pf-rule-id">${escapeHtml(h.id)}</span>
+                            ${h.count > 1 ? `<span class="pf-rule-id">×${h.count}</span>` : ''}
+                        </div>
+                        <div class="pf-rule-meta">
+                            <span class="pf-off">${escapeHtml(pfHex(h.offset))}</span>
+                            ${h.encoding ? `<span class="pf-enc">${escapeHtml(h.encoding)}</span>` : ''}
+                        </div>
+                        <code class="pf-rule-sample">${escapeHtml(h.sample || h.id)}</code>
+                        ${h.context ? `<code class="pf-ctx">${escapeHtml(h.context)}</code>` : ''}
+                    </div>`).join('')
+                : '<p class="svc-empty">No rules matched this binary.</p>';
+        } else if (pfTab === 'history') {
+            const unixs = Array.isArray(e.lastRunsUnix) ? e.lastRunsUnix : [];
+            const exacts = Array.isArray(e.lastRunsExact) ? e.lastRunsExact : [];
+            const items = [];
+            for (let s = 0; s < 8; s++) {
+                const u = unixs[s] || 0;
+                if (!u) continue;
+                items.push({ slot: s, unix: u, text: exacts[s] || '' });
+            }
+            detail = items.length
+                ? `${items.length === 1 ? '<p class="scan-msg" style="margin:0 0 8px 2px">Single recorded execution — this trace captured one run; older runs were never recorded here or the trace was recreated.</p>' : ''}
+                   <div class="pf-hist-head">${items.length} of 8 slots${items.length > 1 ? ` · newest ${escapeHtml(pfRelTime(items[0].unix))} · oldest ${escapeHtml(pfRelTime(items[items.length - 1].unix))}` : ''}</div>
+                   <div class="pf-timeline">${items.map((it, idx) => `
+                    <div class="pf-tl-item ${idx === 0 ? 'latest' : ''}">
+                        <span class="pf-tl-dot"></span>
+                        <div class="pf-tl-copy">
+                            <b>Run ${idx + 1}${idx === 0 ? '<span class="pf-tl-tag">latest</span>' : ''}<span class="pf-tl-rel">${escapeHtml(pfRelTime(it.unix))}</span></b>
+                            <span>${escapeHtml(it.text || '')}${it.text ? ` · ${escapeHtml(pfWeekday(it.unix))} · slot ${it.slot}` : ''}</span>
+                        </div>
+                    </div>`).join('')}</div>`
+                : '<p class="svc-empty">No execution timestamps recorded.</p>';
+        } else {
+            const kb = e.pfSizeBytes ? (e.pfSizeBytes / 1024).toFixed(2) + ' KB' : '—';
+            detail = `
+                ${svcSignal('', 'PF name', e.filename || '—')}
+                ${svcSignal('', 'File size', kb)}
+                ${svcSignal('', 'Creation time', e.pfCreated || '—')}
+                ${svcSignal('', 'Last access time', e.pfAccessed || '—')}
+                ${svcSignal('', 'Last modified time', e.pfModified || '—')}`;
+        }
+
+        return detail;
+    };
+
+    const renderPrefetch = (container, data) => {
+        const entries = Array.isArray(data.entries) ? data.entries : [];
+        const unsigned = entries.filter(e => !e.isSigned).length;
+        const flagged = entries.filter(pfRuleFlagged).length;
+        const inInstance = entries.filter(e => e.isInInstance).length;
+        const lvl = flagged ? 'bad' : (unsigned ? 'warn' : 'ok');
+
+        const vTitle = lvl === 'bad' ? 'Threat traces detected'
+            : lvl === 'warn' ? 'Review recommended' : 'System looks clean';
+        let vSub = lvl === 'bad'
+            ? `${flagged} ${flagged === 1 ? 'binary matches' : 'binaries match'} cheat-trace rules · ${unsigned} unsigned`
+            : lvl === 'warn'
+            ? `${unsigned} unsigned ${unsigned === 1 ? 'binary needs' : 'binaries need'} review · rule checks clean`
+            : `${entries.length} traced ${entries.length === 1 ? 'binary' : 'binaries'} · all signed and accounted for`;
+        const skipped = Math.max(0, (data.filesFound ?? entries.length) - entries.length);
+        if (skipped > 0) vSub += ` · ${skipped} skipped`;
+        const vCount = lvl === 'ok' ? entries.length : (data.findingCount ?? 0);
+
+        const banner = data.admin ? '' : `
+            <div class="svc-banner">
+                ${ICON.lock}
+                <div class="svc-banner-copy">
+                    <strong>Limited scan</strong>
+                    <p>Reading C:\\Windows\\Prefetch needs Administrator. Results may be incomplete.</p>
+                </div>
+                <button type="button" class="pf-admin-btn" id="pfRelaunchAdmin">Restart as Administrator</button>
+            </div>`;
+
+        const verdict = `
+            <div class="pf-verdict lvl-${lvl}">
+                <span class="pf-verdict-icon">${lvl === 'ok' ? PF_ICONS.shieldOk : PF_ICONS.alert}</span>
+                <div class="pf-verdict-copy">
+                    <strong>${escapeHtml(vTitle)}</strong>
+                    <p>${escapeHtml(vSub)}</p>
+                </div>
+                <div class="pf-verdict-count">
+                    <span class="pf-num" data-n="${vCount}">0</span>
+                    <small>${lvl === 'ok' ? 'entries' : 'findings'}</small>
+                </div>
+            </div>`;
+
+        const stat = (icon, n, label, hot, pos) => `
+            <div class="pf-stat ${hot}" style="--d:${pos * 60}ms">
+                <span class="pf-stat-ic">${icon}</span>
+                <span class="pf-stat-copy">
+                    <span class="pf-num" data-n="${n}">0</span>
+                    <span class="pf-stat-label">${escapeHtml(label)}</span>
+                </span>
+            </div>`;
+        const summary = `
+            <div class="pf-stats">
+                ${stat(PF_ICONS.layers, entries.length, 'Entries', '', 0)}
+                ${stat(PF_ICONS.shieldOk, unsigned, 'Unsigned', unsigned ? 'warm' : '', 1)}
+                ${stat(PF_ICONS.zap, flagged, 'Flagged', flagged ? 'hot' : '', 2)}
+                ${stat(PF_ICONS.clock, inInstance, 'In instance', '', 3)}
+            </div>`;
+
+        const filters = `
+            <div class="pf-toolbar">
+                <div class="pf-search-wrap">
+                    ${PF_ICONS.search}
+                    <input type="search" class="pf-search" data-pf-search placeholder="Search binary, rule or time…" value="${escapeHtml(pfFilters.q)}" spellcheck="false" autocomplete="off">
+                </div>
+                <div class="pf-filters">
+                    <label class="pf-check ${pfFilters.unsigned ? 'on' : ''}"><input type="checkbox" data-pf-check="unsigned" ${pfFilters.unsigned ? 'checked' : ''}>Unsigned only</label>
+                    <label class="pf-check ${pfFilters.flagged ? 'on' : ''}"><input type="checkbox" data-pf-check="flagged" ${pfFilters.flagged ? 'checked' : ''}>Flagged only</label>
+                    <label class="pf-check ${pfFilters.instance ? 'on' : ''}"><input type="checkbox" data-pf-check="instance" ${pfFilters.instance ? 'checked' : ''}>Only in instance</label>
+                    <button type="button" class="pf-btn alt-copy-btn" data-pf-copy="flagged">Copy flagged</button>
+                </div>
+            </div>`;
+
+        container.innerHTML = banner + verdict + summary
+            + renderServiceSection(SVC_ICONS.events, 'Prefetch entries', filters + '<div id="pfTableWrap"></div>', `${entries.length} files`);
+
+        revealSections(container);
+        paintPfTable();
+        pfCountUp(container);
+
+        const relaunchBtn = container.querySelector('#pfRelaunchAdmin');
+        bindOnce(relaunchBtn, async () => {
+            await window.pywebview.api.relaunch_as_admin();
+        }, 'tool');
+    };
+
+    const openPrefetch = async (force = false) => {
+        showScreen('prefetch-screen');
+        if (pfBusy) return;
+
+        const container = $('pf-results');
+        if (!force && pfResult) {
+            renderPrefetch(container, pfResult);
+            bindPfContainer(container);
+            return;
+        }
+        setPfBusy(true);
+        pfResult = null;
+        pfSelected = -1;
+        container.innerHTML = loadingState(
+            'Parsing Prefetch traces…',
+            'Execution history, binary signatures and cheat-trace rules');
+
+        try {
+            const result = await window.pywebview.api.prefetch_run();
+            if (!result) throw new Error('No output returned.');
+            if (result.error && !(result.entries?.length)) {
+                container.innerHTML = `
+                    <div class="scanning-state">
+                        <p>${escapeHtml(result.error)}</p>
+                    </div>`;
+                return;
+            }
+            pfResult = result;
+            pfSelected = -1;
+            renderPrefetch(container, result);
+            bindPfContainer(container);
+        } catch (err) {
+            container.innerHTML = isCancellation(err)
+                ? '<div class="scanning-state"><p>Scan stopped.</p></div>'
+                : `<div class="scanning-state"><p>Error running scan: ${escapeHtml(err.message || err)}</p></div>`;
+        } finally {
+            setPfBusy(false);
+        }
+    };
+
+    const bindPfContainer = (container) => {
+        if (!container || container.dataset.pfBound === '1') return;
+        container.dataset.pfBound = '1';
+
+        container.addEventListener('click', (e) => {
+            const sortBtn = e.target.closest('[data-pf-sort]');
+            if (sortBtn && container.contains(sortBtn)) {
+                const key = sortBtn.getAttribute('data-pf-sort');
+                if (pfSort.key === key) pfSort.dir *= -1;
+                else pfSort = { key, dir: key === 'time' ? -1 : 1 };
+                SoundFX.click();
+                paintPfTable();
+                return;
+            }
+            const copyBtn = e.target.closest('[data-pf-copy]');
+            if (copyBtn && container.contains(copyBtn)) {
+                SoundFX.click();
+                addRipple(copyBtn, e.clientX, e.clientY);
+                const flagged = (pfResult?.entries || [])
+                    .filter(pfRuleFlagged)
+                    .map(x => {
+                        const det = (x.matchedDetails || []).map(h =>
+                            `${h.name || h.id} "${h.sample || ''}" @${pfHex(h.offset)}${h.encoding ? ` ${h.encoding}` : ''}${h.count > 1 ? ` ×${h.count}` : ''}`);
+                        return `${x.readableTime || ''}  ${x.properPath || x.filename || ''}  [${det.join('; ') || (x.matchedRules || []).join(',')}]`;
+                    });
+                copyPfLines(flagged, copyBtn, 'items');
+                return;
+            }
+            const row = e.target.closest('[data-pf-row]');
+            if (row && container.contains(row)) {
+                const idx = Number(row.getAttribute('data-pf-row'));
+                if (Number.isInteger(idx)) {
+                    SoundFX.tool();
+                    addRipple(row, e.clientX, e.clientY);
+                    openPfModal(idx);
+                }
+            }
+        });
+
+        container.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            const row = e.target.closest?.('[data-pf-row]');
+            if (row && container.contains(row)) {
+                e.preventDefault();
+                const idx = Number(row.getAttribute('data-pf-row'));
+                if (Number.isInteger(idx)) {
+                    SoundFX.tool();
+                    openPfModal(idx);
+                }
+            }
+        });
+
+        container.addEventListener('change', (e) => {
+            const check = e.target.closest?.('[data-pf-check]');
+            if (!check || !container.contains(check)) return;
+            const key = check.getAttribute('data-pf-check');
+            pfFilters[key] = check.checked;
+            check.closest('.pf-check')?.classList.toggle('on', check.checked);
+            paintPfTable();
+        });
+
+        container.addEventListener('input', (e) => {
+            const search = e.target.closest?.('[data-pf-search]');
+            if (!search || !container.contains(search)) return;
+            pfFilters.q = search.value;
+            paintPfTable();
+        });
+    };
+
+    const bindPfModal = () => {
+        if (!ui.pfModal || ui.pfModal.dataset.bound === '1') return;
+        ui.pfModal.dataset.bound = '1';
+
+        ui.pfModalCloseBtn?.addEventListener('mouseenter', () => SoundFX.hover());
+        ui.pfModalCloseBtn?.addEventListener('click', (e) => {
+            SoundFX.close();
+            addRipple(ui.pfModalCloseBtn, e.clientX, e.clientY);
+            closePfModal();
+        });
+
+        ui.pfModal.addEventListener('click', (e) => {
+            if (e.target === ui.pfModal) {
+                closePfModal();
+                return;
+            }
+            const copyBtn = e.target.closest('[data-pf-copy]');
+            if (copyBtn && ui.pfModal.contains(copyBtn) && copyBtn.getAttribute('data-pf-copy') === 'related') {
+                SoundFX.click();
+                addRipple(copyBtn, e.clientX, e.clientY);
+                const list = Array.isArray(pfResult?.entries) ? pfResult.entries : [];
+                const files = (pfSelected >= 0 && pfSelected < list.length && Array.isArray(list[pfSelected].relatedFiles))
+                    ? list[pfSelected].relatedFiles.map(f => f.path).filter(Boolean)
+                    : [];
+                copyPfLines(files, copyBtn, 'paths');
+                return;
+            }
+            const tab = e.target.closest('[data-pf-tab]');
+            if (tab && ui.pfModal.contains(tab)) {
+                const key = tab.getAttribute('data-pf-tab');
+                if (key !== pfTab) {
+                    pfTab = key;
+                    SoundFX.click();
+                    paintPfModal();
+                }
+            }
+        });
+
+        ui.pfModal.addEventListener('mouseenter', (e) => {
+            if (e.target.closest?.('[data-pf-tab]')) SoundFX.hover();
+        }, true);
+
+        ui.pfModal.addEventListener('input', (e) => {
+            const input = e.target.closest?.('[data-pf-filter]');
+            if (!input || !ui.pfModal.contains(input)) return;
+            const q = input.value.trim().toLowerCase();
+            const list = input.parentElement?.querySelector('.alt-list');
+            if (!list) return;
+            list.querySelectorAll('.alt-row').forEach(row => {
+                const hay = (row.textContent || '').toLowerCase();
+                row.hidden = q !== '' && !hay.includes(q);
+            });
+        });
+    };
+
+    const copyPfLines = (lines, btn, label) => {
+        if (!lines.length) {
+            flashCopied(btn, 'Nothing to copy');
+            return;
+        }
+        const text = lines.join('\n');
+        const done = (ok) => flashCopied(btn, ok ? `Copied ${lines.length} ${label}` : 'Copy failed');
+        if (navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(text).then(() => done(true), () => fallbackCopy(text, done));
+        } else {
+            fallbackCopy(text, done);
+        }
+    };
+
+    const exportPfResult = () => {
+        if (!pfResult) return;
+        const blob = new Blob([JSON.stringify(pfResult, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Prefetch_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+    };
+
     document.addEventListener('visibilitychange', () => {
         document.documentElement.classList.toggle('bg-paused', document.hidden);
     });
@@ -2433,12 +1623,10 @@
 
             if (card.dataset.tool === 'service-checker') {
                 openServiceChecker();
-            } else if (card.dataset.tool === 'prefetch-parser') {
-                openPrefetchParser();
-            } else if (card.dataset.tool === 'bam-parser') {
-                openBamParser();
             } else if (card.dataset.tool === 'alt-detector') {
                 openAltDetector();
+            } else if (card.dataset.tool === 'prefetch') {
+                openPrefetch();
             }
         });
     });
@@ -2468,14 +1656,6 @@
     });
     bindOnce(ui.svcRescanBtn, () => openServiceChecker(true), 'tool');
 
-    ui.prefetchBackBtn?.addEventListener('mouseenter', () => SoundFX.hover());
-    ui.prefetchBackBtn?.addEventListener('click', (e) => {
-        SoundFX.close();
-        addRipple(ui.prefetchBackBtn, e.clientX, e.clientY);
-        stopCurrentScan();
-        showScreen('main-screen');
-    });
-
     ui.altBackBtn?.addEventListener('mouseenter', () => SoundFX.hover());
     ui.altBackBtn?.addEventListener('click', (e) => {
         SoundFX.close();
@@ -2483,6 +1663,20 @@
         stopCurrentScan();
         showScreen('main-screen');
     });
+
+    ui.pfBackBtn?.addEventListener('mouseenter', () => SoundFX.hover());
+    ui.pfBackBtn?.addEventListener('click', (e) => {
+        SoundFX.close();
+        addRipple(ui.pfBackBtn, e.clientX, e.clientY);
+        closePfModal();
+        stopCurrentScan();
+        showScreen('main-screen');
+    });
+    bindOnce(ui.pfRescanBtn, () => openPrefetch(true), 'tool');
+    bindOnce(ui.pfExportBtn, () => {
+        if (!pfResult) return;
+        exportPfResult();
+    }, 'tool');
 
     ui.modalCloseBtn?.addEventListener('mouseenter', () => SoundFX.hover());
     ui.modalCloseBtn?.addEventListener('click', (e) => {
@@ -2500,24 +1694,18 @@
 
     window.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
-            const pfMissing = $('pf-missing-modal');
-            const pfInfo = $('pf-info-modal');
-            if (pfInfo && pfInfo.classList.contains('active')) {
-                closePfInfo();
-            } else if (pfMissing && pfMissing.classList.contains('active')) {
-                closeMissingModal();
-            } else if (ui.modal.classList.contains('active')) {
+            if (ui.modal.classList.contains('active')) {
                 closeModal();
+            } else if (pfModalOpen()) {
+                closePfModal();
             } else if (ui.serviceBackBtn && $('service-screen').classList.contains('active')) {
-                stopCurrentScan();
-                showScreen('main-screen');
-            } else if (ui.prefetchBackBtn && $('prefetch-screen').classList.contains('active')) {
                 stopCurrentScan();
                 showScreen('main-screen');
             } else if (ui.altBackBtn && $('alt-screen').classList.contains('active')) {
                 stopCurrentScan();
                 showScreen('main-screen');
-            } else if (ui.bamBackBtn && $('bam-screen').classList.contains('active')) {
+            } else if (ui.pfBackBtn && $('prefetch-screen').classList.contains('active')) {
+                closePfModal();
                 stopCurrentScan();
                 showScreen('main-screen');
             }
@@ -2528,14 +1716,9 @@
         el.addEventListener('mouseenter', () => SoundFX.softHover());
     });
 
-    bindPfToolbar();
-    bindPrefetchResults();
-    bindBamToolbar();
     bindAltToolbar();
+    bindPfModal();
 
-    /* ---------------------------------------------------------------- *
-     *  Splash lifecycle
-     * ---------------------------------------------------------------- */
     const splashEl = $('splash');
     const MIN_SPLASH_MS = 1600;
     let splashStarted = Date.now();
@@ -2547,7 +1730,7 @@
         const delay = Math.max(0, MIN_SPLASH_MS - elapsed);
         setTimeout(() => splashEl.classList.add('done'), delay);
     }
-    // failsafe: never stuck - close after 2.5s even if load never fires (WebView2 virtual host)
+
     setTimeout(closeSplash, 2500);
     window.addEventListener('load', closeSplash);
     document.addEventListener('DOMContentLoaded', () => setTimeout(closeSplash, 400));

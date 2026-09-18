@@ -1,11 +1,9 @@
 using System.IO;
-using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Windows;
+using System.Runtime.InteropServices;
 using System.Windows.Interop;
 using Microsoft.Web.WebView2.Core;
 using Serilog;
-
 
 public partial class MainWindow : Window
 {
@@ -73,7 +71,7 @@ public partial class MainWindow : Window
         if (msg == WM_GETMINMAXINFO)
         {
             var mmi = Marshal.PtrToStructure<MINMAXINFO>(lParam);
-            IntPtr monitor = MonitorFromWindow(hwnd, 0x00000002); 
+            IntPtr monitor = MonitorFromWindow(hwnd, 0x00000002);
 
             var monitorInfo = new MONITORINFO { Size = Marshal.SizeOf<MONITORINFO>() };
             if (GetMonitorInfo(monitor, ref monitorInfo))
@@ -95,6 +93,10 @@ public partial class MainWindow : Window
 
     private async void OnWindowLoaded(object sender, RoutedEventArgs e)
     {
+        // Must run before any WebView2 interop so the loader resolves
+        // from the embedded copy instead of the app directory.
+        NativeBootstrapper.EnsureWebView2Loader();
+
         try
         {
             string userDataFolder = Path.Combine(
@@ -145,6 +147,7 @@ public partial class MainWindow : Window
     private async Task InjectCompatibilityShimAsync()
     {
         const string shim = """
+
             (function() {
                 var pendingCalls = {};
                 var callId = 0;
@@ -234,8 +237,7 @@ public partial class MainWindow : Window
     {
         string uri = e.Uri ?? "";
         if (uri.StartsWith("https://app.iris.local/", StringComparison.OrdinalIgnoreCase) ||
-            uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase) ||
-            uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            uri.StartsWith("about:blank", StringComparison.OrdinalIgnoreCase))
             return;
         e.Cancel = true;
         Logger.Warning("Blocked navigation to {Uri}", uri);
@@ -280,8 +282,9 @@ public partial class MainWindow : Window
         }
         catch
         {
-            
         }
+        try { _apiHandler?.Dispose(); } catch { }
+        _apiHandler = null;
         WebView.Dispose();
         base.OnClosed(e);
     }

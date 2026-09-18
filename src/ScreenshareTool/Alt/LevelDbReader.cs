@@ -1,35 +1,12 @@
 using System.Buffers.Binary;
 using System.Text;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 internal static class LevelDbReader
 {
-    
     internal const byte KFullType = 1, KFirstType = 2, KMiddleType = 3, KLastType = 4;
 
-    
     private static readonly byte[] Magic = { 0x57, 0xfb, 0x80, 0x8b, 0x24, 0x75, 0x47, 0xdb };
 
-    
-    
-    
-    
     internal static List<(string Key, string Value)> ReadLog(byte[] data)
     {
         var result = new List<(string, string)>();
@@ -45,7 +22,6 @@ internal static class LevelDbReader
                 byte type = data[pos + 6];
                 if (length == 0 && type == 0)
                 {
-                    
                     pos = (int)Math.Min(data.Length, ((pos / (long)BlockSize) + 1) * BlockSize);
                     continue;
                 }
@@ -69,7 +45,6 @@ internal static class LevelDbReader
                         ParseWriteBatch(fragment.ToArray(), result);
                         fragment.Clear();
                         break;
-                    
                 }
                 pos += length;
             }
@@ -78,9 +53,6 @@ internal static class LevelDbReader
         return result;
     }
 
-    
-    
-    
     internal static List<(string Key, string Value)> ReadTable(byte[] data)
     {
         var result = new List<(string, string)>();
@@ -90,10 +62,9 @@ internal static class LevelDbReader
             var footer = data.AsSpan(data.Length - 48, 48);
             if (!footer.Slice(40, 8).SequenceEqual(Magic)) return result;
 
-            
             int fp = 0;
-            _ = ReadVarint(footer, ref fp); 
-            _ = ReadVarint(footer, ref fp); 
+            _ = ReadVarint(footer, ref fp);
+            _ = ReadVarint(footer, ref fp);
             ulong indexOffset = ReadVarint(footer, ref fp);
             ulong indexSize = ReadVarint(footer, ref fp);
             if (indexOffset >= (ulong)data.Length || indexSize < 6) return result;
@@ -124,21 +95,15 @@ internal static class LevelDbReader
         return result;
     }
 
-    
-    
     private static void ParseWriteBatch(ReadOnlySpan<byte> payload, List<(string, string)> result)
     {
         if (payload.Length <= 8) return;
-        var batch = payload.Slice(8); 
+        var batch = payload.Slice(8);
         int p = 0;
-        _ = ReadVarint(batch, ref p); 
+        _ = ReadVarint(batch, ref p);
         ParseEntries(batch.Slice(p), (key, value) => result.Add((Decode(key), Decode(value))));
     }
 
-    
-    
-    
-    
     private static void ParseEntries(ReadOnlySpan<byte> block, Action<byte[], byte[]> onEntry)
     {
         int p = 0;
@@ -153,8 +118,11 @@ internal static class LevelDbReader
             if (keyLen > block.Length - p || valueLen > block.Length - p - keyLen) return;
 
             var key = new byte[keyLen];
-            if (shared > 0 && prefix != null && shared <= prefix.Length)
+            if (shared > 0)
+            {
+                if (prefix is null || shared > prefix.Length) return;
                 Array.Copy(prefix, 0, key, 0, shared);
+            }
             block.Slice(p, nonShared).CopyTo(key.AsSpan(shared));
             p += nonShared;
 
@@ -166,10 +134,6 @@ internal static class LevelDbReader
         }
     }
 
-    
-    
-    
-    
     private static byte[]? ReadBlock(byte[] file, int offset, int size)
     {
         if (offset < 0 || size < 1 || offset > file.Length - size - 5) return null;
@@ -179,8 +143,6 @@ internal static class LevelDbReader
         return block.ToArray();
     }
 
-    
-    
     internal static byte[]? SnappyDecode(ReadOnlySpan<byte> src)
     {
         int pos = 0;
@@ -196,7 +158,6 @@ internal static class LevelDbReader
             int type = tag & 3;
             if (type == 0)
             {
-                
                 int len = (tag >> 2) + 1;
                 if ((tag >> 2) >= 60)
                 {
@@ -215,22 +176,21 @@ internal static class LevelDbReader
             }
             else
             {
-                
                 int len, offset;
                 switch (type)
                 {
-                    case 1: 
+                    case 1:
                         if (pos >= src.Length) return null;
                         len = ((tag >> 2) & 0x7) + 4;
                         offset = ((tag >> 5) << 8) | src[pos++];
                         break;
-                    case 2: 
+                    case 2:
                         if (pos + 2 > src.Length) return null;
                         len = (tag >> 2) + 1;
                         offset = src[pos] | (src[pos + 1] << 8);
                         pos += 2;
                         break;
-                    default: 
+                    default:
                         if (pos + 4 > src.Length) return null;
                         len = (tag >> 2) + 1;
                         offset = src[pos] | (src[pos + 1] << 8) | (src[pos + 2] << 16) | (src[pos + 3] << 24);
@@ -240,7 +200,7 @@ internal static class LevelDbReader
                 if (offset <= 0 || offset > outPos || outPos + len > target) return null;
                 for (int i = 0; i < len; i++)
                 {
-                    output[outPos] = output[outPos - offset]; 
+                    output[outPos] = output[outPos - offset];
                     outPos++;
                 }
             }

@@ -1,7 +1,5 @@
-using System;
 using System.IO;
 using System.Reflection;
-
 
 internal static class EmbeddedAssetExtractor
 {
@@ -37,21 +35,19 @@ internal static class EmbeddedAssetExtractor
             Directory.CreateDirectory(root);
         }
 
-        string loc = Assembly.GetExecutingAssembly().Location;
-        if (string.IsNullOrEmpty(loc))
-            loc = Environment.ProcessPath ?? "";
+        // Environment.ProcessPath works inside single-file bundles, where
+        // Assembly.Location is always empty.
+        string loc = Environment.ProcessPath ?? "";
         DateTime stampUtc = !string.IsNullOrEmpty(loc) && File.Exists(loc)
             ? File.GetLastWriteTimeUtc(loc)
             : DateTime.UtcNow;
         string version = "v" + stampUtc.Ticks.ToString();
         string markerPath = Path.Combine(root, ".embedded-version");
 
-        
-        
         if (File.Exists(Path.Combine(root, "Assets", "index.html")) &&
             File.Exists(markerPath) && File.ReadAllText(markerPath) == version)
         {
-            return root; 
+            return root;
         }
         TryDeleteTree(root);
 

@@ -1,26 +1,9 @@
 using System.Text;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 internal static class SqliteReader
 {
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("SQLite format 3\0");
 
-    
-    
     internal static List<string> ReadRowTexts(byte[] file)
     {
         var result = new List<string>();
@@ -29,11 +12,10 @@ internal static class SqliteReader
         {
             if (!file.AsSpan(0, 16).SequenceEqual(Magic)) return result;
 
-            int pageSize = (file[16] << 8) | file[17]; 
+            int pageSize = (file[16] << 8) | file[17];
             if (pageSize == 1) pageSize = 65536;
             if (pageSize < 512 || pageSize > 65536 || (pageSize & (pageSize - 1)) != 0) return result;
 
-            
             var roots = new List<int>();
             ReadTablePage(file, 1, pageSize, row =>
             {
@@ -59,8 +41,6 @@ internal static class SqliteReader
         return result;
     }
 
-    
-    
     private static void ReadTablePage(byte[] file, int page, int pageSize, Action<List<string>> onRow)
     {
         int pageStart = (page - 1) * pageSize;
@@ -71,41 +51,37 @@ internal static class SqliteReader
         int cellCount = ReadU16(file, contentStart + 3);
         if (cellCount < 0 || cellCount > 8192) return;
 
-        if (type == 13) 
+        if (type == 13)
         {
             for (int i = 0; i < cellCount; i++)
             {
                 int cellOff = ReadU16(file, contentStart + 8 + 2 * i);
-                int cellAbs = pageStart + cellOff; 
+                int cellAbs = pageStart + cellOff;
                 if (cellAbs < contentStart || cellAbs + 2 > file.Length) continue;
                 int cp = cellAbs;
                 var payloadLen = ReadVarint(file, ref cp);
-                _ = ReadVarint(file, ref cp); 
-                if (payloadLen > (ulong)(pageSize - 40)) continue; 
+                _ = ReadVarint(file, ref cp);
+                if (payloadLen > (ulong)(pageSize - 40)) continue;
                 if (cp + (int)payloadLen > file.Length) continue;
                 var row = ParseRecord(file.AsSpan(cp, (int)payloadLen));
                 if (row != null) onRow(row);
             }
         }
-        else if (type == 5) 
+        else if (type == 5)
         {
             int rightChild = ReadU32BE(file, contentStart + 8);
             if (rightChild > 1) ReadTablePage(file, rightChild, pageSize, onRow);
             for (int i = 0; i < cellCount; i++)
             {
                 int cellOff = ReadU16(file, contentStart + 12 + 2 * i);
-                int cellAbs = pageStart + cellOff; 
+                int cellAbs = pageStart + cellOff;
                 if (cellAbs < contentStart || cellAbs + 5 > file.Length) continue;
                 int child = ReadU32BE(file, cellAbs);
                 if (child > 1) ReadTablePage(file, child, pageSize, onRow);
             }
         }
-        
     }
 
-    
-    
-    
     private static List<string>? ParseRecord(ReadOnlySpan<byte> record)
     {
         int pos = 0;
@@ -124,34 +100,35 @@ internal static class SqliteReader
         var row = new List<string>(types.Count);
         foreach (var t in types)
         {
-            if (t == 0) { row.Add(string.Empty); continue; }              
-            if (t >= 13 && (t & 1) == 1)                                  
+            if (t == 0) { row.Add(string.Empty); continue; }
+            if (t >= 13 && (t & 1) == 1)
             {
                 int len = (int)((t - 13) / 2);
                 if (pos + len > record.Length) return null;
                 row.Add(Encoding.UTF8.GetString(record.Slice(pos, len)));
                 pos += len;
             }
-            else if (t >= 12 && (t & 1) == 0)                             
+            else if (t >= 12 && (t & 1) == 0)
             {
                 int len = (int)((t - 12) / 2);
                 if (pos + len > record.Length) return null;
                 row.Add(Encoding.UTF8.GetString(record.Slice(pos, len)));
                 pos += len;
             }
-            else if (t == 8) { row.Add("0"); }                            
-            else if (t == 9) { row.Add("1"); }                            
-            else if (t == 7) { pos += 8; row.Add(string.Empty); }         
-            else if (t >= 1 && t <= 6)                                    
+            else if (t == 8) { row.Add("0"); }
+            else if (t == 9) { row.Add("1"); }
+            else if (t == 7) { pos += 8; row.Add(string.Empty); }
+            else if (t >= 1 && t <= 6)
             {
                 int len = t switch { 1 => 1, 2 => 2, 3 => 3, 4 => 4, 5 => 6, _ => 8 };
                 if (pos + len > record.Length) return null;
                 long v = 0;
-                for (int i = len - 1; i >= 0; i--) v = (v << 8) | record[pos + i];
+                for (int i = 0; i < len; i++) v = (v << 8) | record[pos + i];
+                if (len < 8 && (record[pos] & 0x80) != 0) v -= 1L << (len * 8);
                 pos += len;
                 row.Add(v.ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
-            else { return null; } 
+            else { return null; }
         }
         return row;
     }

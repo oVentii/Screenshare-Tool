@@ -1,9 +1,10 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#000000">
     <title>iRis Screenshare Tool</title>
     <script>
         (function () {
@@ -32,16 +33,16 @@
         })();
     </script>
     <link rel="icon" type="image/x-icon" href="icon.ico">
-    <link rel="preload" as="image" href="giflogo.gif">
+    <link rel="preload" as="image" href="giflogo.gif" fetchpriority="high">
+    <link rel="preload" as="font" type="font/woff2" href="nunito-latin.woff2" crossorigin>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<!-- ===================== SPLASH ===================== -->
 <div id="splash" class="splash" aria-hidden="true">
     <div class="splash-inner">
         <div class="splash-logo-wrap">
-            <img src="giflogo.gif" class="splash-logo" alt="iRis">
+            <img src="giflogo.gif" class="splash-logo" alt="iRis" width="132" height="132" decoding="async" fetchpriority="high">
         </div>
         <div class="splash-wordmark">iRis</div>
         <div class="splash-tagline">Screenshare Tool</div>
@@ -51,7 +52,6 @@
     </div>
 </div>
 
-<!-- ===================== BACKGROUND ===================== -->
 <div class="bg-stage" aria-hidden="true">
     <canvas id="bg-canvas"></canvas>
     <div class="bg-aurora bg-aurora-1"></div>
@@ -61,7 +61,6 @@
 </div>
 <div id="mouseGlow" class="mouse-glow" aria-hidden="true"></div>
 
-<!-- ===================== MAIN MENU ===================== -->
 <div id="main-screen" class="screen active">
     <header class="dynamic-island">
         <div class="island-brand">
@@ -123,31 +122,16 @@
                         <span class="tool-status" data-label="Ready">Ready</span>
                     </div>
                 </div>
-                <div class="tool-card glass-card" data-tool="prefetch-parser" data-sound="tool">
+                <div class="tool-card glass-card" data-tool="prefetch" data-sound="tool">
                     <div class="tool-card-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                            <circle cx="10.5" cy="10.5" r="6.5"/>
-                            <path d="M20.5 20.5l-4-4"/>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <path d="M14 2v6h6"/>
+                            <path d="M9 13h6M9 17h4"/>
                         </svg>
                     </div>
                     <h3>Prefetch Parser</h3>
-                    <p>Correlates Prefetch, USN and execution leftovers with signatures and YARA.</p>
-                    <div class="tool-card-footer">
-                        <span class="tool-status" data-label="Ready">Ready</span>
-                    </div>
-                </div>
-                <div class="tool-card glass-card tool-card-bam" data-tool="bam-parser" data-sound="tool">
-                    <div class="tool-card-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/>
-                            <ellipse cx="12" cy="12" rx="9" ry="3.6"/>
-                            <ellipse cx="12" cy="12" rx="9" ry="3.6" transform="rotate(60 12 12)"/>
-                            <ellipse cx="12" cy="12" rx="9" ry="3.6" transform="rotate(120 12 12)"/>
-                            <circle cx="21" cy="12" r="1.6" fill="currentColor" stroke="none"/>
-                        </svg>
-                    </div>
-                    <h3>Bam Parser</h3>
-                    <p>Background Activity Moderator execution traces with signatures, YARA, deleted BAM recovery and denied registry keys.</p>
+                    <p>Parses Windows Prefetch execution traces, verifies binary signatures and flags known cheat traces.</p>
                     <div class="tool-card-footer">
                         <span class="tool-status" data-label="Ready">Ready</span>
                     </div>
@@ -162,7 +146,6 @@
     </div>
 </div>
 
-<!-- ===================== SERVICE CHECKER ===================== -->
 <div id="service-screen" class="screen">
     <header class="dynamic-island">
         <div class="island-brand">
@@ -205,134 +188,6 @@
     </div>
 </div>
 
-<!-- ===================== PREFETCH PARSER ===================== -->
-<div id="prefetch-screen" class="screen">
-    <header class="dynamic-island">
-        <div class="island-brand">
-            <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" width="18" height="18" aria-hidden="true">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-            </svg>
-            <span class="iris-text">iRis</span>
-        </div>
-        <nav class="island-nav">
-            <button type="button" class="nav-item js-mute-btn" aria-label="Mute sounds" aria-pressed="false" title="Mute sounds">
-                <svg class="icon-on" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M18.07 5.93a9 9 0 010 12.14"/></svg>
-                <svg class="icon-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H3v6h3l5 4V5z"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>
-            </button>
-            <button type="button" class="nav-item js-theme-btn" aria-label="Switch to light theme" aria-pressed="false" title="Light theme">
-                <svg class="icon-on" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
-                <svg class="icon-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 14.5A8.5 8.5 0 1111.5 3 7 7 0 0021 14.5z"/></svg>
-            </button>
-            <button id="prefetchBackBtn" class="nav-item" data-sound="close" aria-label="Back">
-                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><line x1="19" y1="12" x2="5" y2="12" stroke="currentColor" stroke-width="2"/><polyline points="12 19 5 12 12 5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
-            </button>
-        </nav>
-    </header>
-
-    <div class="content scrollable-area">
-        <main>
-            <section class="hero" id="prefetch-hero">
-                <div class="svc-hero-top">
-                    <div class="rank-badge">Prefetch Analysis</div>
-                    <div class="tool-hero-actions">
-                        <button type="button" class="pf-btn" id="pfReload" hidden>
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.2-5.8"/><polyline points="21 3 21 9 15 9"/></svg>
-                            Rescan
-                        </button>
-                        <button type="button" class="pf-btn" id="pfMissing" hidden data-sound="tool" aria-haspopup="dialog" aria-controls="pf-missing-modal" aria-expanded="false">
-                            Missing
-                            <span id="pfMissingCount" class="pf-btn-count is-empty">0</span>
-                        </button>
-                        <button type="button" class="pf-btn" id="pfExport" hidden>Export CSV</button>
-                    </div>
-                </div>
-                <h1>Prefetch Parser</h1>
-                <p class="hero-sub">Correlates Prefetch, USN, ShimCache, Amcache, signatures and YARA so deleting one artifact is not enough.</p>
-            </section>
-
-            <div id="pfToolbar" class="pf-workbar" hidden>
-                <div class="pf-toolbar-row">
-                    <input id="pfSearch" class="pf-search" type="search" placeholder="Filter path, signature, hash, risk…" spellcheck="false" autocomplete="off">
-                    <div class="pf-chip-group" id="pfFilters">
-                        <button type="button" class="pf-chip" data-filter="untrusted">Untrusted</button>
-                        <button type="button" class="pf-chip" data-filter="risky">High risk</button>
-                        <button type="button" class="pf-chip" data-filter="postlogon">Post-logon</button>
-                        <button type="button" class="pf-chip" data-filter="yara">YARA</button>
-                        <button type="button" class="pf-chip" data-filter="multi">Multi-artifact</button>
-                    </div>
-                </div>
-                <div class="pf-toolbar-row">
-                    <button type="button" id="pfUsn" class="pf-btn">USN Journal</button>
-                    <button type="button" id="pfUsnStatus" class="pf-btn">USN Integrity</button>
-                    <button type="button" id="pfSysMain" class="pf-btn">SysMain</button>
-                    <button type="button" id="pfArtifacts" class="pf-btn">Artifacts</button>
-                    <button type="button" id="pfExportArtifacts" class="pf-btn">Export artifacts</button>
-                    <span id="pfExportStatus" class="pf-export-status"></span>
-                </div>
-            </div>
-
-            <div id="prefetch-results" class="service-results"></div>
-        </main>
-    </div>
-</div>
-
-<!-- ===================== BAM PARSER ===================== -->
-<div id="bam-screen" class="screen">
-    <header class="dynamic-island">
-        <div class="island-brand">
-            <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" width="18" height="18" aria-hidden="true">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-            </svg>
-            <span class="iris-text">iRis</span>
-        </div>
-        <nav class="island-nav">
-            <button type="button" class="nav-item js-mute-btn" aria-label="Mute sounds" aria-pressed="false" title="Mute sounds">
-                <svg class="icon-on" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M18.07 5.93a9 9 0 010 12.14"/></svg>
-                <svg class="icon-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H3v6h3l5 4V5z"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>
-            </button>
-            <button type="button" class="nav-item js-theme-btn" aria-label="Switch to light theme" aria-pressed="false" title="Light theme">
-                <svg class="icon-on" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
-                <svg class="icon-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 14.5A8.5 8.5 0 1111.5 3 7 7 0 0021 14.5z"/></svg>
-            </button>
-            <button id="bamBackBtn" class="nav-item" data-sound="close" aria-label="Back">
-                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><line x1="19" y1="12" x2="5" y2="12" stroke="currentColor" stroke-width="2"/><polyline points="12 19 5 12 12 5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
-            </button>
-        </nav>
-    </header>
-
-    <div class="content scrollable-area">
-        <main>
-            <section class="hero" id="bam-hero">
-                <div class="svc-hero-top">
-                    <div class="rank-badge">BAM Analysis</div>
-                    <div class="tool-hero-actions">
-                        <button type="button" class="pf-btn" id="bamRescanBtn" hidden>
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.2-5.8"/><polyline points="21 3 21 9 15 9"/></svg>
-                            Rescan
-                        </button>
-                    </div>
-                </div>
-                <h1>Bam Parser</h1>
-                <p class="hero-sub">Background Activity Moderator execution traces tagged with signatures and YARA, plus deleted BAM recovery and denied registry keys.</p>
-            </section>
-
-            <div id="bamToolbar" class="pf-workbar" hidden>
-                <div class="pf-toolbar-row">
-                    <input id="bamSearch" class="pf-search" type="search" placeholder="Filter path, signature, rule…" spellcheck="false" autocomplete="off">
-                    <div class="pf-chip-group" id="bamFilters">
-                        <button type="button" class="pf-chip" data-filter="untrusted">Untrusted</button>
-                        <button type="button" class="pf-chip" data-filter="postlogon">Post-logon</button>
-                        <button type="button" class="pf-chip" data-filter="yara">YARA</button>
-                    </div>
-                </div>
-            </div>
-
-            <div id="bam-results" class="service-results"></div>
-        </main>
-    </div>
-</div>
-
-<!-- ===================== ALT CHECKER ===================== -->
 <div id="alt-screen" class="screen">
     <header class="dynamic-island">
         <div class="island-brand">
@@ -379,49 +234,68 @@
     </div>
 </div>
 
-<!-- ===================== MODALS ===================== -->
-<div id="pf-info-modal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
-    <div class="modal-card glass-card pf-info-card">
-        <div class="pf-info-header">
-            <h3 id="pfInfoTitle">Info</h3>
-            <button id="pfInfoCloseBtn" class="modal-close-btn" aria-label="Close">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <line x1="6" y1="6" x2="18" y2="18" stroke="currentColor" stroke-width="1.8"/>
-                    <line x1="18" y1="6" x2="6" y2="18" stroke="currentColor" stroke-width="1.8"/>
-                </svg>
+<div id="prefetch-screen" class="screen">
+    <header class="dynamic-island">
+        <div class="island-brand">
+            <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" width="18" height="18" aria-hidden="true">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
+            <span class="iris-text">iRis</span>
+        </div>
+        <nav class="island-nav">
+            <button type="button" class="nav-item js-mute-btn" aria-label="Mute sounds" aria-pressed="false" title="Mute sounds">
+                <svg class="icon-on" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M18.07 5.93a9 9 0 010 12.14"/></svg>
+                <svg class="icon-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H3v6h3l5 4V5z"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>
             </button>
-        </div>
-        <div class="pf-info-scroll">
-            <div class="pf-info-icon" id="pfInfoIcon" aria-hidden="true"></div>
-            <div id="pfInfoBody" class="pf-info-body"></div>
-        </div>
+            <button type="button" class="nav-item js-theme-btn" aria-label="Switch to light theme" aria-pressed="false" title="Light theme">
+                <svg class="icon-on" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+                <svg class="icon-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 14.5A8.5 8.5 0 1111.5 3 7 7 0 0021 14.5z"/></svg>
+            </button>
+            <button id="pfBackBtn" class="nav-item" data-sound="close" aria-label="Back">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><line x1="19" y1="12" x2="5" y2="12" stroke="currentColor" stroke-width="2"/><polyline points="12 19 5 12 12 5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+            </button>
+        </nav>
+    </header>
+
+    <div class="content scrollable-area">
+        <main>
+            <section class="hero" id="pf-hero">
+                <div class="svc-hero-top">
+                    <div class="rank-badge">Execution Trace Analysis</div>
+                    <div class="tool-hero-actions">
+                        <button type="button" class="pf-btn" id="pfRescanBtn" hidden>
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.2-5.8"/><polyline points="21 3 21 9 15 9"/></svg>
+                            Rescan
+                        </button>
+                        <button type="button" class="pf-btn" id="pfExportBtn" hidden>Export JSON</button>
+                    </div>
+                </div>
+                <h1>Prefetch Parser</h1>
+                <p class="hero-sub">Parses Windows Prefetch execution traces, verifies binary signatures and flags known cheat traces.</p>
+            </section>
+
+            <div id="pf-results" class="service-results"></div>
+        </main>
     </div>
 </div>
 
-<div id="pf-missing-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="pfMissingTitle" aria-hidden="true">
-    <div class="modal-card glass-card pf-info-card">
-        <div class="pf-info-header">
-            <h3 id="pfMissingTitle">Missing / not found / leftover</h3>
-            <button id="pfMissingCloseBtn" class="modal-close-btn" aria-label="Close">
+<div id="pf-modal" class="pf-modal" role="dialog" aria-modal="true" aria-labelledby="pfModalTitle">
+    <div class="pf-modal-card glass-card">
+        <div class="pf-modal-head">
+            <span class="pf-modal-icon" id="pfModalIcon"></span>
+            <div class="pf-modal-title-wrap">
+                <h3 id="pfModalTitle">Entry details</h3>
+                <p id="pfModalSub"></p>
+            </div>
+            <button id="pfModalCloseBtn" class="modal-close-btn" data-sound="close" aria-label="Close">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                     <line x1="6" y1="6" x2="18" y2="18" stroke="currentColor" stroke-width="1.8"/>
                     <line x1="18" y1="6" x2="6" y2="18" stroke="currentColor" stroke-width="1.8"/>
                 </svg>
             </button>
         </div>
-        <div class="pf-info-scroll">
-            <div class="pf-missing-toolbar">
-                <input id="pfMissingSearch" class="pf-missing-search" type="text" placeholder="Search name, path, source...">
-                <div class="pf-chip-group" id="pfMissingFilters">
-                    <button class="pf-chip on" data-miss="all" type="button">All</button>
-                    <button class="pf-chip" data-miss="missing" type="button">Missing</button>
-                    <button class="pf-chip" data-miss="unresolved" type="button">Unresolved</button>
-                    <button class="pf-chip" data-miss="deleted" type="button">Deleted</button>
-                    <button class="pf-chip" data-miss="ghost" type="button">Leftover</button>
-                </div>
-            </div>
-            <div id="pfMissingBody" class="pf-info-body"></div>
-        </div>
+        <div class="pf-tabs" id="pfModalTabs" role="tablist"></div>
+        <div class="pf-modal-body" id="pfModalBody"></div>
     </div>
 </div>
 
